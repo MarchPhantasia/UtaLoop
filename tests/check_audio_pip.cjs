@@ -76,7 +76,12 @@ const fixture = process.argv[4];
           assert.equal(await page.locator('#audio').getAttribute('src'), null);
         }
         const button = page.locator('#btnAudioPip');
+        const openTools = async () => { if (kind === 'audio') await page.locator('#btnDisplay').click(); };
+        const closeTools = async () => { if (kind === 'audio') await page.getByRole('button', { name: '关闭', exact: true }).click(); };
+        const togglePip = async () => { await openTools(); await button.click(); await closeTools(); };
+        await openTools();
         assert.equal(await button.isVisible(), native === 'supported');
+        await closeTools();
         if (native !== 'supported') {
           await page.screenshot({ path: path.join(output, kind + '-' + (native || 'browser') + '.png') });
           continue;
@@ -88,7 +93,7 @@ const fixture = process.argv[4];
           await page.waitForFunction(() => document.getElementById('video').readyState >= 2);
           assert.equal(await page.evaluate(() => document.getElementById('video').muted), true);
         }
-        await button.click();
+        await togglePip();
         try { await page.waitForFunction(() => document.querySelector('#app.is-audio-pip')); }
         catch (error) {
           console.error({ kind, native, state: await page.evaluate(() => ({
@@ -109,13 +114,13 @@ const fixture = process.argv[4];
         await page.waitForFunction(() => window.nativePipCalls.some(([name, value]) => name === 'update' && value.captionSize === 28));
         await page.locator('.sheet-head [aria-label="关闭"]').click();
         await page.locator('.sheet-head [aria-label="关闭"]').click();
-        await button.click();
+        await togglePip();
         await page.waitForFunction(() => !document.querySelector('#app.is-audio-pip'));
         assert.equal(await page.evaluate(() => LT.engine.audio.paused), false);
         assert.equal(await page.evaluate(() => LT.engine.audio.playbackRate), 1.5);
         for (let repeat = 0; repeat < 2; repeat++) {
-          await button.click(); await page.waitForFunction(() => document.querySelector('#app.is-audio-pip'));
-          await button.click(); await page.waitForFunction(() => !document.querySelector('#app.is-audio-pip'));
+          await togglePip(); await page.waitForFunction(() => document.querySelector('#app.is-audio-pip'));
+          await togglePip(); await page.waitForFunction(() => !document.querySelector('#app.is-audio-pip'));
         }
         if (kind === 'video') {
           await page.evaluate(() => {

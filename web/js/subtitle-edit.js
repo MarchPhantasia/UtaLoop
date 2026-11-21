@@ -27,8 +27,9 @@ export function editedTranscript(data) {
 
 export async function prepareSubtitleEdit(track, i, values, { signal, onStage = () => {} } = {}) {
   const previous = track.sentences[i];
-  const text = String(values.text || '').trim();
-  if (!previous || !text) throw new Error('字幕原文不能为空');
+  const entered = String(values.text || '').trim();
+  if (!previous || !entered) throw new Error('字幕原文不能为空');
+  const text = entered === previous.text.trim() ? previous.text : entered;
   const changed = text !== previous.text;
   const reanalyze = !!values.reanalyze || (changed && sentenceAnalyzed(track, previous));
   let sentence = changed ? plainSentence({ ...previous, text }) : { ...previous };
@@ -46,6 +47,10 @@ export async function prepareSubtitleEdit(track, i, values, { signal, onStage = 
       throw new Error('未收到有效的单句分析结果，请重试');
     }
     sentence = { ...sentence, ...fresh, text, i, start: previous.start, end: previous.end, analyzed: true };
+    if (!changed && previous.words.some(word => word.readingOverride)) {
+      const { retainReadingOverrides } = await import('./music-lyrics.js');
+      sentence = retainReadingOverrides(previous, sentence);
+    }
   }
   let translation = String(values.translation || '').trim();
   if (values.retranslate) {

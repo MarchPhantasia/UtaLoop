@@ -17,6 +17,7 @@ const USER_SCROLL_HOLD = 2600; // ms: 手动滚动后暂停自动跟随
 const SCROLL_TAU = 150;        // ms: 自动滚动的缓动时间常数
 const IDLE_GRACE = 500;
 const CUE_EPS = 0.004;         // s: 见 _sync —— 补偿媒体元素的采样点对齐
+const SEEK_END_MARGIN = 0.01;
 
 export class Engine {
   constructor(ctx) {
@@ -26,13 +27,18 @@ export class Engine {
     this.scroller = ctx.scroller;
     this.dom = ctx.dom;
     this.track = null;
+    this.lyricOffset = 0;
+    this.outputDelay = ctx.outputDelay;
+    this.lastSeekPosition = 0;
 
-    this.follow = true;
+    this.followEnabled = true;
+    this.followHeld = false;
     this.suspended = false;
     this.presentationHidden = false;
     this.followAlign = FOLLOW_ALIGN;
-    this.repeat = 0;          // 0 关 / 1 单句 / 2 全部
+    this.repeat = 0;          // 0 关 / 1 歌词区间或单句 / 2 全部
     this.loopS = -1;
+    this.rangeEndS = null;
     this.shadow = 'off';      // off | listen | speak
     this.shadowS = -1;
     this.speakUntil = 0;
@@ -46,7 +52,9 @@ export class Engine {
     this._pct = -1;
     this._railW = 0;
     this._wrote = 0;
-    this._userAt = 0;
+    this._userAt = -Infinity;
+    this._followTimer = null;
+    this._centerActive = false;
     this._target = -1;
     this._needV = true;
     this._lastKick = 0;
@@ -55,15 +63,25 @@ export class Engine {
     this._onFrame = this._frame.bind(this);
   }
 
-  attach(track) {
+  get follow() { return this.followEnabled && !this.followHeld && this._followTimer === null; }
+  get isRangeLoop() { return this.repeat === 1 && this.rangeEndS !== null; }
+  get loopEndS() { return this.rangeEndS ?? this.loopS; }
+
+  attach(track, lyricOffset = 0) {
     this.track = track;
+    this.lyricOffset = lyricOffset;
+    this.lastSeekPosition = 0;
     this._sHint = this._wHint = -1;
     this._sec = -1;
     this._pct = -1;
     this._target = -1;
+    this._centerActive = false;
+    this._userAt = -Infinity;
+    if (this._endBrowse()) this.onFollowChange?.(this.follow);
     this._needV = true;
     this.repeat = 0;
     this.loopS = -1;
+    this.rangeEndS = null;
     this._syncNativeLoop();
     this.shadow = 'off';
     this.kick();
@@ -75,7 +93,26 @@ export class Engine {
     this.reader.setActive(-1, -1);
     this._needV = true;
     this._target = -1;
+    if (this.repeat === 1) this._syncNativeLoop();
     this.kick();
+  }
+
+  setLyricOffset(seconds) {
+    this.lyricOffset = seconds;
+    if (this.repeat === 1) this._syncNativeLoop();
+    this.kick();
+  }
+
+  toLyricTime(mediaTime) { return mediaTime - this.lyricOffset; }
+
+  toMediaTime(lyricTime) {
+    return clamp(lyricTime + this.lyricOffset, 0, this.audio.duration || this.track?.duration || Infinity);
+  }
+
+  hasPlayableRange(first, last = first) {
+    const tr = this.track;
+    return first >= 0 && last >= first && last < tr?.S
+      && this.toMediaTime(tr.sEnd[last]) - this.toMediaTime(tr.sStart[first]) > SEEK_END_MARGIN;
   }
 
   // ------------------------------------------------------------ 循环控制
@@ -118,10 +155,15 @@ export class Engine {
 
   markScrollDirty() { this._needV = true; this.kick(); }
 
-  noteUserScroll({ unpin = false } = {}) {
+  noteUserScroll({ browse = false } = {}) {
     this._userAt = performance.now();
     this._target = -1;
-    if (unpin) this.setFollow(false);
+    this._centerActive = false;
+    if (this.suspended || this.followHeld || !this.track?.S || !this.followEnabled || (!browse && this.follow)) return;
+    const wasFollowing = this.follow;
+    clearTimeout(this._followTimer);
+    this._followTimer = setTimeout(() => this.resumeFollow(), USER_SCROLL_HOLD);
+    if (wasFollowing) this.onFollowChange?.(false);
   }
 
   setRailWidth(w) { this._railW = w; this._pct = -1; }
@@ -144,7 +186,11 @@ export class Engine {
       return;
     }
 
-    this._sync(t);
+    // The effect buffers sound. Seek and loop boundaries still use the media clock.
+    const delay = this.outputDelay?.() || 0;
+    const cueTime = delay && !this.scrubbing && !audio.paused && !audio.seeking
+      ? Math.max(Math.min(t, this.lastSeekPosition), t - delay * audio.playbackRate) : t;
+    this._sync(cueTime, now);
     this._paintSeek(t);
     this._autoScroll(dt);
     if (this._needV) { this._needV = false; this.vlist.update(false); }
@@ -157,12 +203,13 @@ export class Engine {
   }
 
   /** 定位当前句/词并写入高亮. */
-  _sync(t) {
+  _sync(t, now = performance.now()) {
     const tr = this.track;
     /*  定位用的时间往前借几毫秒: 把 currentTime 设成某个词的起点时, 媒体元素会
         对齐到采样点, 落点可能比目标早几微秒 (23.92 → 1054872/44100 =
         23.919999999999998), 不补这一点点, 点词后高亮会停在上一个词上。       */
-    const tc = t + CUE_EPS;
+    const lyricTime = this.toLyricTime(t);
+    const tc = lyricTime + CUE_EPS;
     const s = locate(tr.sStart, tr.S, tc, this._sHint);
     this._sHint = s;
 
@@ -174,7 +221,7 @@ export class Engine {
         if (tr.wSent[k] === s) {
           wj = tr.wIdx[k];
           const a = tr.wStart[k], b = tr.wEnd[k];
-          p = b > a ? clamp((t - a) / (b - a), 0, 1) : 1;
+          p = b > a ? clamp((lyricTime - a) / (b - a), 0, 1) : 1;
         }
       }
     }
@@ -183,9 +230,12 @@ export class Engine {
     const prevW = this.reader.activeW;
     this.reader.setActive(s, wj);
     this.reader.setProgress(p);
-    if (s !== prevS && s >= 0) {
-      this._needV = true;
-      if (this.follow && performance.now() - this._userAt > USER_SCROLL_HOLD) this._follow(s);
+    if (s !== prevS && s >= 0) this._needV = true;
+    if (this._centerActive && !this.scrubbing) {
+      this._centerActive = false;
+      if (tr.S) this._target = this.vlist.scrollTargetFor(Math.max(0, s), this.followAlign);
+    } else if (s >= 0 && s !== prevS && this.follow && !this.scrubbing && now - this._userAt >= USER_SCROLL_HOLD) {
+      this._follow(s);
     }
     if ((s !== prevS || wj !== prevW) && this.onCursor) this.onCursor(s, wj, s !== prevS);
   }
@@ -226,10 +276,8 @@ export class Engine {
   }
 
   scrollToActive() {
-    const s = this.reader.activeS;
-    if (s < 0) return;
-    this._userAt = 0;
-    this._target = this.vlist.scrollTargetFor(s, this.followAlign);
+    this._userAt = -Infinity;
+    this._centerActive = true;
     this.kick();
   }
 
@@ -239,16 +287,16 @@ export class Engine {
     const cur = sc.scrollTop;
     const d = this._target - cur;
     if (Math.abs(d) < 0.75) {
-      this._write(this._target);
+      this.setScrollTop(this._target);
       this._target = -1;
       return;
     }
     const step = Math.abs(d) > 3000 ? d : d * (1 - Math.exp(-dt / SCROLL_TAU));
-    this._write(cur + step);
+    this.setScrollTop(cur + step);
     this._needV = true;
   }
 
-  _write(y) {
+  setScrollTop(y) {
     const max = this.scroller.scrollHeight - this.scroller.clientHeight;
     const v = clamp(y, 0, Math.max(0, max));
     this._wrote = v;
@@ -257,12 +305,10 @@ export class Engine {
 
   /** scroll 事件回调: 判断是自己写的还是用户拖的. */
   onScroll() {
-    if (Math.abs(this.scroller.scrollTop - this._wrote) > 2) {
-      this._userAt = performance.now();
-      this._target = -1;
-    }
-    this._needV = true;
-    this.kick();
+    const top = this.scroller.scrollTop;
+    if (Math.abs(top - this._wrote) > 1) this.noteUserScroll({ browse: true });
+    this._wrote = top;
+    this.markScrollDirty();
   }
 
   // ------------------------------------------------------------ 循环 / 跟读
@@ -270,11 +316,10 @@ export class Engine {
   _loops(t, now) {
     const tr = this.track;
     if (this.shadow !== 'off') { this._shadowStep(t, now); return; }
-    if (this.repeat === 1 && this.loopS >= 0 && this.loopS < tr.S) {
+    if (this.repeat === 1 && this.loopS >= 0 && this.loopEndS < tr.S) {
       if (this.audio.nativeAudio) return; // Native boundary handling keeps looping in the background.
-      if (t >= tr.sEnd[this.loopS] - 0.008 || t < tr.sStart[this.loopS] - 0.2) {
-        this.seek(tr.sStart[this.loopS]);
-      }
+      const start = this.toMediaTime(tr.sStart[this.loopS]), end = this.toMediaTime(tr.sEnd[this.loopEndS]);
+      if (end - start > SEEK_END_MARGIN && (t >= end - 0.008 || t < start - 0.2)) this.seek(start);
     }
   }
 
@@ -283,10 +328,11 @@ export class Engine {
     const i = this.shadowS;
     if (i < 0 || i >= tr.S) { this.setShadow(false); return; }
     if (this.shadow === 'listen') {
-      if (t >= tr.sEnd[i] - 0.008) {
+      const end = this.toMediaTime(tr.sEnd[i]);
+      if (t >= end - 0.008) {
         this.audio.pause();
-        this.seek(tr.sEnd[i]);
-        const dur = Math.max(1.2, tr.sEnd[i] - tr.sStart[i]);
+        this.seek(end);
+        const dur = Math.max(1.2, end - this.toMediaTime(tr.sStart[i]));
         this.speakUntil = now + dur * 1150 + 350;
         this.shadow = 'speak';
         this.onShadowState && this.onShadowState('speak', i, this.speakUntil);
@@ -298,7 +344,7 @@ export class Engine {
       if (next >= tr.S) { this.setShadow(false); return; }
       this.shadowS = next;
       this.shadow = 'listen';
-      this.seek(tr.sStart[next]);
+      this.seek(this.toMediaTime(tr.sStart[next]));
       this.audio.play().catch(() => {});
       this.onShadowState && this.onShadowState('listen', next, 0);
     } else {
@@ -309,37 +355,78 @@ export class Engine {
   // ------------------------------------------------------------ 对外操作
 
   seek(t) {
+    if (this.isRangeLoop && this.hasPlayableRange(this.loopS, this.loopEndS)) {
+      const start = this.toMediaTime(this.track.sStart[this.loopS]);
+      const end = this.toMediaTime(this.track.sEnd[this.loopEndS]);
+      if (t < start || t >= end) t = start;
+    }
     const dur = this.audio.duration || this.track.duration || 0;
-    this.audio.currentTime = clamp(t, 0, dur ? dur - 0.01 : t);
+    this.audio.currentTime = clamp(t, 0, dur ? Math.max(0, dur - SEEK_END_MARGIN) : t);
+    this.lastSeekPosition = this.audio.currentTime;
     this._sec = -1;
     this.kick();
   }
 
-  /** 点击句子/单词: 定位并把该句设为循环/跟读的锚点. */
-  seekSentence(i, t) {
+  /** 点击句子/单词: 把歌词时间换为媒体时间，并更新循环/跟读的锚点。 */
+  seekSentence(i, lyricTime) {
     const tr = this.track;
     if (i < 0 || i >= tr.S) return;
-    this.seek(t != null ? t : tr.sStart[i]);
-    if (this.repeat === 1) this.loopS = i;
-    if (this.repeat === 1) this._syncNativeLoop();
+    if (this.isRangeLoop && (i < this.loopS || i > this.loopEndS)) return;
+    this.seek(this.toMediaTime(lyricTime ?? tr.sStart[i]));
+    if (this.repeat === 1 && !this.isRangeLoop && this.loopS !== i) {
+      this.loopS = i;
+      this._syncNativeLoop();
+    }
     if (this.shadow !== 'off') { this.shadowS = i; this.shadow = 'listen'; }
-    this._userAt = 0;
-    this._target = this.vlist.scrollTargetFor(i, FOLLOW_ALIGN);
+    if (this._endBrowse()) this.onFollowChange?.(this.follow);
+    this._userAt = -Infinity;
+    this._centerActive = false;
+    if (!this.followHeld) this._target = this.vlist.scrollTargetFor(i, this.followAlign);
+  }
+
+  _endBrowse() {
+    if (this._followTimer === null) return false;
+    clearTimeout(this._followTimer);
+    this._followTimer = null;
+    return true;
+  }
+
+  resumeFollow() {
+    if (this.followEnabled) this.setFollow(true);
   }
 
   setFollow(on) {
-    const changed = this.follow !== on;
-    this.follow = on;
-    if (on) this.scrollToActive();
-    else this._target = -1;
-    if (changed) this.onFollowChange?.(on);
+    const changed = this.followEnabled !== on;
+    const wasBrowsing = this._endBrowse();
+    this.followEnabled = on;
+    if (on && !this.followHeld) this.scrollToActive();
+    else {
+      this._centerActive = false;
+      this._target = -1;
+    }
+    if (changed || wasBrowsing) this.onFollowChange?.(this.follow);
   }
 
-  setRepeat(mode) {
+  /** 选择区间时暂缓滚动，不改变用户设置的跟随开关。 */
+  holdFollow(held) {
+    if (this.followHeld === held) return;
+    this.followHeld = held;
+    if (held) {
+      this._endBrowse();
+      this._target = -1;
+      this._centerActive = false;
+    } else this.resumeFollow();
+    this.onFollowChange?.(this.follow);
+  }
+
+  setRepeat(mode, first, last = null) {
+    const endingCueLoop = this.repeat === 1 && mode !== 1;
     this.repeat = mode;
-    this.loopS = mode === 1 ? Math.max(0, this.reader.activeS) : -1;
+    this.loopS = mode === 1 ? first ?? Math.max(0, this.reader.activeS) : -1;
+    this.rangeEndS = mode === 1 ? last : null;
     this._syncNativeLoop();
     if (mode) this.setShadow(false);
+    if (endingCueLoop) this.resumeFollow();
     this.kick();
   }
 
@@ -353,10 +440,11 @@ export class Engine {
       return;
     }
     this.repeat = 0;
+    this.rangeEndS = null;
     this._syncNativeLoop();
     this.shadowS = Math.max(0, this.reader.activeS);
     this.shadow = 'listen';
-    this.seek(this.track.sStart[this.shadowS]);
+    this.seek(this.toMediaTime(this.track.sStart[this.shadowS]));
     this.audio.play().catch(() => {});
     this.onShadowState && this.onShadowState('listen', this.shadowS, 0);
   }
@@ -364,9 +452,10 @@ export class Engine {
   _syncNativeLoop() {
     if (!this.audio.setLoop) return;
     const i = this.loopS;
+    const inRange = this.repeat === 1 && this.hasPlayableRange(i, this.loopEndS);
     this.audio.setLoop({ all: this.repeat === 2,
-      start: this.repeat === 1 && i >= 0 && i < this.track.S ? this.track.sStart[i] : null,
-      end: this.repeat === 1 && i >= 0 && i < this.track.S ? this.track.sEnd[i] : null });
+      start: inRange ? this.toMediaTime(this.track.sStart[i]) : null,
+      end: inRange ? this.toMediaTime(this.track.sEnd[this.loopEndS]) : null });
   }
 
   /** 上/下一句. */

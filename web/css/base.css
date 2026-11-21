@@ -22,27 +22,27 @@
 
 :root {
   /* 表面 */
-  --bg: #f2f2ea;
-  --bg-soft: #ecedde;
-  --card: #e7ecd7;
-  --card-2: #dfe6cd;
-  --sheet: #f7f7f1;
+  --bg: #f6f8fc;
+  --bg-soft: #edf1f8;
+  --card: #e8eef9;
+  --card-2: #dce6f7;
+  --sheet: #ffffff;
   --line: rgba(28, 32, 22, .09);
   --line-2: rgba(28, 32, 22, .16);
 
   /* 文字 */
-  --ink: #1b1f16;
-  --ink-2: #40463a;
-  --ink-3: #6c7364;
-  --ink-4: #979e8d;
+  --ink: #202c40;
+  --ink-2: #49566b;
+  --ink-3: #617085;
+  --ink-4: #748095;
 
   /* 强调 */
-  --accent: #4f7a37;
-  --accent-2: #3d6029;
-  --accent-soft: #d7e6c4;
-  --cta: #b6f18f;
-  --cta-ink: #1d3311;
-  --ring: #4f9b35;
+  --accent: #426bac;
+  --accent-2: #375d99;
+  --accent-soft: #dce8fa;
+  --cta: #c6ddff;
+  --cta-ink: #203a63;
+  --ring: #5582c4;
   --bar-a: 34%;
 
   /* 尺寸 */
@@ -58,9 +58,9 @@
   /* 各文字层使用独立 px 字号; 固定网格行高只跟随对应层, 由 Metrics 重新度量. */
   --fs-text: 25px;
   --lh-text: calc(var(--fs-text) * 34 / 25);
-  --fs-read: 12px;
+  --fs-read: 14px;
   --lh-read: calc(var(--fs-read) * 4 / 3);
-  --fs-roman: 11.5px;
+  --fs-roman: 13.5px;
   --lh-roman: calc(var(--fs-roman) * 30 / 23);
   --h-bar: 5px;
   --gap-bar: 3px;
@@ -80,8 +80,6 @@
      后端新增一门语言时这里不必动 —— 没写覆盖就吃默认那套。 */
   --font-text: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif;
   --font-translation: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif;
-  --font-ui: system-ui, -apple-system, "Segoe UI", "PingFang SC",
-             "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-roman: ui-rounded, "SF Pro Rounded", "Segoe UI", Roboto, system-ui, sans-serif;
   /*  注音层的字体: 前面几个是为 IPA 音标准备的 (拉丁语言的注音是 ɹ ʃ ð ɝ ɑ̃ 这类
       字符, 系统 UI 字体的覆盖并不齐), 最后回落到 --font-text —— 于是日语的假名与
@@ -102,16 +100,20 @@ html[data-lang="ko"], .font-preview[data-lang="ko"], .caption-preview[data-lang=
 }
 
 /* Translation glyphs belong to the target language, independently of the source font. */
+html[data-translation-lang="zh-CN"],
 :is(.font-preview-tr, .caption-preview-tr):lang(zh-CN) {
-  --font-translation: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-translation: var(--font-ui);
 }
+html[data-translation-lang="zh-TW"],
 :is(.font-preview-tr, .caption-preview-tr):lang(zh-TW) {
   --font-translation: "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
 }
+html[data-translation-lang="ja"],
 :is(.font-preview-tr, .caption-preview-tr):lang(ja) {
   --font-translation: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic Medium",
                       "Yu Gothic", "Noto Sans JP", "Meiryo", system-ui, sans-serif;
 }
+html[data-translation-lang="ko"],
 :is(.font-preview-tr, .caption-preview-tr):lang(ko) {
   --font-translation: "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR",
                       "Nanum Gothic", system-ui, sans-serif;
@@ -124,23 +126,23 @@ html[data-space="1"] {
 }
 
 html[data-theme="dark"] {
-  --bg: #15170f;
-  --bg-soft: #1b1e14;
-  --card: #262b1b;
-  --card-2: #2f351f;
-  --sheet: #1e2116;
+  --bg: #29323e;
+  --bg-soft: #333d4b;
+  --card: #3b485a;
+  --card-2: #43546c;
+  --sheet: #303b49;
   --line: rgba(235, 240, 220, .10);
   --line-2: rgba(235, 240, 220, .18);
-  --ink: #eef1e3;
-  --ink-2: #c6cbb6;
-  --ink-3: #969c86;
-  --ink-4: #6f7663;
-  --accent: #a8d68a;
-  --accent-2: #c2e6a8;
-  --accent-soft: #33421f;
-  --cta: #b6f18f;
-  --cta-ink: #16240c;
-  --ring: #9ede78;
+  --ink: #f2f5fc;
+  --ink-2: #d2ddeb;
+  --ink-3: #bbc6d6;
+  --ink-4: #a6b4c8;
+  --accent: #a5c6ff;
+  --accent-2: #c4dbff;
+  --accent-soft: #415574;
+  --cta: #c6ddff;
+  --cta-ink: #203a63;
+  --ring: #a5c6ff;
   --bar-a: 30%;
 }
 
@@ -511,6 +513,101 @@ button {
   white-space: nowrap;
 }
 .row.is-danger .row-label b { color: #b23b2e; }
+
+.ai-settings-entry {
+  width: 100%;
+  min-height: 72px;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--bg-soft);
+  text-align: start;
+}
+.ai-settings-entry::before { content: none; }
+.ai-settings-entry .row-label b { font-size: 15px; }
+.ai-settings-entry .row-v { font-size: 12px; }
+.ai-settings-entry[data-configured="true"] .row-v { color: var(--accent-2); }
+.ai-settings-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+.ai-settings-mark .ic { width: 20px; height: 20px; }
+.ai-settings-entry:active { background: var(--card); }
+
+:is(.ai-settings-sheet, .track-settings-sheet) { width: min(100%, 540px); max-height: 88dvh; }
+:is(.ai-settings-sheet, .track-settings-sheet) .sheet-head { padding: 8px 18px 12px; }
+:is(.ai-settings-sheet, .track-settings-sheet) .sheet-head h2 { font-size: 20px; }
+:is(.ai-settings-sheet, .track-settings-sheet) .sheet-head .tb-btn { width: 44px; height: 44px; }
+:is(.ai-settings-sheet, .track-settings-sheet) .sheet-body {
+  padding-inline: clamp(16px, 5vw, 24px);
+  overscroll-behavior: contain;
+}
+.ai-settings-sheet .sheet-acts .btn { min-height: 40px; padding-inline: 10px; border-color: transparent; }
+.ai-status {
+  margin: 9px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ai-status:empty { margin: 0; }
+.ai-provider-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 8px;
+  margin-bottom: 13px;
+}
+.ai-provider-bar > b { grid-column: 1 / -1; font-size: 13px; }
+.ai-provider-bar .btn { min-height: 44px; }
+.ai-provider-switch { justify-content: space-between; min-width: 0; text-align: start; }
+.ai-provider-switch > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-provider-switch .ic { flex: none; }
+.ai-model-fields { padding: 14px; border-radius: 18px; background: var(--bg-soft); }
+.ai-settings-sheet .field :is(input, .field-eye) { min-height: 44px; font-size: 16px; }
+.ai-model-fields .field-eye { width: 44px; background: var(--sheet); }
+.ai-model-fields input[aria-invalid="true"] { border-color: #b65548; }
+.ai-model-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 8px; }
+.ai-model-row .field { margin: 0; }
+.ai-model-row .btn { min-height: 44px; padding-inline: 10px; background: var(--sheet); font-size: 13px; }
+.ai-reasoning { margin-top: 14px; padding: 0; border-top: 0; }
+.ai-reasoning .segs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); width: 100%; background: var(--card); }
+.ai-reasoning .seg { min-width: 0; min-height: 44px; padding: 0 3px; }
+.ai-save-controls { margin: 2px 4px 0; justify-content: flex-end; }
+.ai-save-controls .btn { min-height: 44px; }
+.ai-save-controls .ai-remove-provider { margin-right: auto; background: transparent; color: var(--ink-3); border-color: transparent; }
+.ai-picker .ai-status { margin: 0 1px 9px; }
+.ai-picker .ai-status:empty { margin: 0; }
+.ai-model-list { overflow: hidden; border-radius: 15px; background: var(--bg-soft); }
+.ai-model-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 9px 12px;
+  text-align: start;
+}
+.ai-model-option + .ai-model-option { border-top: 1px solid var(--line); }
+.ai-model-option:focus-visible { outline-offset: -2px; }
+.ai-model-option[aria-current="true"] { background: var(--accent-soft); color: var(--accent-2); }
+.ai-model-option .ic { flex: none; }
+.ai-model-label { display: grid; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.ai-model-label small { color: var(--ink-3); }
+@media (hover: hover) {
+  .ai-settings-entry:hover, .ai-model-option:not([aria-current]):hover { background: var(--card); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ai-settings-entry, .ai-model-option { transition: background-color .16s var(--ease); }
+}
+
 /*  档位多到一行放不下的分段行 (语言、倍速): 标题必须显式占满一行, 否则
     `flex: none` 的 .segs 会把 min-width:0 的标题挤到只剩一个字宽, 竖着排;
     .segs 自己也要给 max-width, 不然它按 max-content 铺开, 里面的档位不会换行,
@@ -708,6 +805,15 @@ button {
   transition: opacity .14s, transform .14s var(--ease);
 }
 .menu.is-open { opacity: 1; transform: scale(1); }
+.menu-title {
+  max-width: 240px;
+  padding: 6px 10px 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-3);
+  font-size: 12px;
+}
 .menu-i {
   display: flex;
   align-items: center;
@@ -721,7 +827,14 @@ button {
   text-align: left;
 }
 .menu-i .ic { color: var(--ink-3); flex: none; }
+.menu-i[role=menuitemradio] { min-height: 44px; }
+.menu-i[aria-checked=true] { background: var(--accent-soft); color: var(--accent-2); }
+.menu-i[aria-checked=true] .ic { color: inherit; }
+.menu-check { margin-inline-start: auto; }
 .menu-i:active { background: var(--bg-soft); }
+@media (hover:hover) {
+  .menu-i[aria-checked=false]:hover { background: var(--bg-soft); }
+}
 .menu-i.is-danger, .menu-i.is-danger .ic { color: #b23b2e; }
 
 .confirm { padding: 2px 0 6px; }

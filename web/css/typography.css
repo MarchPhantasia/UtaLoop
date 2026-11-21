@@ -1,0 +1,7 @@
+/* Named local fonts keep the UI readable across device locales and offline. */
+:root {
+  --font-ui-latin: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", Roboto, "Helvetica Neue";
+  --font-simplified: "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei",
+                     "Noto Sans CJK SC", "Hiragino Sans GB";
+  --font-ui: var(--font-ui-latin), var(--font-simplified), system-ui, sans-serif;
+}

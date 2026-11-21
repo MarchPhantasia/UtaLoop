@@ -71,6 +71,6 @@ body {
 .pip-tr {
   margin-top: 2px;
   color: #edf2e7;
-  font: 500 clamp(13px, 7vh, var(--pip-fs-tr, 16.5px)) / 1.3 var(--pip-font-text, system-ui, sans-serif);
+  font: 500 clamp(13px, 7vh, var(--pip-fs-tr, 16.5px)) / 1.3 var(--pip-font-translation, system-ui, sans-serif);
   text-shadow: 0 1px 3px #000;
 }

@@ -373,6 +373,25 @@ class MergeTest(unittest.TestCase):
         self.assertAlmostEqual(word.end, 1.6)
         self.assertEqual([p.surface for p in word.parts], ["思っ", "て"])
 
+    def test_unidic_layouts_read_surface_kana_and_keep_particle_pronunciation(self):
+        from pipeline.tokenizer import JapaneseTokenizer
+
+        for size, kana_column in ((17, None), (26, 17), (29, 20)):
+            with self.subTest(size=size):
+                fields = ["*"] * size
+                fields[9] = "アエ"
+                if kana_column is not None:
+                    fields[kana_column] = "アエ"
+                    fields[kana_column + 1] = "アエル"
+                if size == 26:
+                    fields[20] = "アエル"  # formBase in the 26-column dictionary
+                self.assertEqual(JapaneseTokenizer._reading(fields, "会え"), "アエ")
+                fields[9] = "ワ"
+                if kana_column is not None:
+                    fields[kana_column] = "ハ"
+                self.assertEqual(JapaneseTokenizer._reading(fields, "は"), "ハ")
+                self.assertEqual(JapaneseTokenizer._pron(fields, "ハ"), "ワ")
+
     def test_pron_drives_romaji_not_spelling(self):
         """助词 は 读作 wa: 罗马音必须用発音形, 注音仍用仮名形."""
         word = merge_morphemes([mk("は", "particle", kana_="ハ", pron="ワ")])[0]
@@ -420,6 +439,18 @@ class TokenizerTest(unittest.TestCase):
         self.assertEqual(last.surface, "。")
         self.assertEqual(last.pos, "punct")
         self.assertEqual(last.romaji, "")
+
+    def test_inflected_lyrics_read_as_written(self):
+        for text, reading, roman in (
+            ("会えぬなら", "あえぬなら", "aenunara"),
+            ("眠らせて", "ねむらせて", "nemurasete"),
+            ("足りない", "たりない", "tarinai"),
+            ("思って", "おもって", "omotte"),
+        ):
+            with self.subTest(text=text):
+                words = merge_morphemes(self.tk.tokenize(text))
+                self.assertEqual("".join(kana.to_hiragana(word.kana) for word in words), reading)
+                self.assertEqual("".join(word.romaji for word in words), roman)
 
 
 # ---------------------------------------------------------------- 韩语罗马字

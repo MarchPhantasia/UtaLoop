@@ -1,13 +1,13 @@
 /**
  * 全局配置 —— 分析后端地址 + 大模型接入参数 + 每种语言的默认开关 + 所有提示词.
  *
- * 配置保存在 `localStorage`: 访问令牌只发给分析后端, 模型 Key 只发给模型端点。
+ * 配置保存在 `localStorage`: 访问令牌用于分析后端，模型 Key 用于所选服务商。
  *
- * 提示词全部外露成模板, 用 `{{var}}` 占位; 语言相关的部分 (源语言名、注音层叫什么)
- * 也是变量, 于是同一套提示词能服务所有语言, 用户在设置页里还能整段重写。
+ * 已保存的提示词仍按语言填充模板变量。服务商列表与当前连接使用同一个本地配置键。
  */
 
 import { sourceSpec } from './langs.js';
+import { randomId } from './util.js';
 
 const KEY = 'linguatrack.config.v1';
 
@@ -27,7 +27,7 @@ export const langName = (code) =>
 /** 每种源语言的默认开关 (新音频照它初始化, 之后每条音频各自记). */
 export const LANG_DEFAULTS = { tr: 0, read: 1, roman: 1, pos: 1, card: 1 };
 
-/** 提示词默认值; 每条都在设置页里可编辑. */
+/** 助学功能使用的默认提示词。 */
 export const DEFAULT_PROMPTS = {
   translate:
     '你是资深的{{src}}影视字幕译者, 服务于语言学习 App。\n' +
@@ -69,15 +69,18 @@ export const DEFAULT_PROMPTS = {
 
   explainUser:
     '{{context}}请讲解这一句: {{sentence}}',
+
+  lyricReading: [
+    '为正在学唱的用户校对日语歌词的词界和读音。先看本句及前后句，判断词义、助词、助数词、活用和固定搭配，再选读音。',
+    '例如「何かを」的「何か」是不定代词，常规读作「なにか」；「何回」「何か月」是数量结构，分别读作「なんかい」「なんかげつ」。避免只按一个汉字统一读音。',
+    '按证据判断唱法：优先采用 confirmed:true 的用户确认唱法，其次参考 sourceReadings 的歌词自带注音，再用能对齐到本句词界的 sourceRoman 做交叉核对。を 的 o 与 wo 等罗马字拼写差异不表示读音冲突。',
+    'tokens 中未确认的读音和词性只是分析初稿，可以依据明确的原注音、音译或句法修正。艺名、借字、改唱和口语缩读可能随版本变化，只有本句的证据明确时才校正。可信来源互相矛盾或有多种可能且无从判断时，省略该行。输入没有音轨，不能凭曲名或记忆声称听到了某种唱法。',
+    '有汉字的词填写完整词形的平假名，包含实际唱出的活用部分。用日语唱出的数字和数量词也写假名，例如「1から」的「1」通常是「いち」，「1人」通常是「ひとり」。纯假名、外语、空格和标点不重复注音。',
+  ].join('\n'),
 };
 
-export const PROMPT_META = [
-  { key: 'translate', title: '翻译 · 系统提示词', vars: 'src dst' },
-  { key: 'translateUser', title: '翻译 · 请求模板', vars: 'src dst n numbered before after' },
-  { key: 'word', title: '单词卡片 · 系统提示词', vars: 'src dst read roman' },
-  { key: 'wordUser', title: '单词卡片 · 请求模板', vars: 'src dst word reading pos sentence context' },
-  { key: 'explain', title: '讲解 · 系统提示词', vars: 'src dst read roman' },
-  { key: 'explainUser', title: '讲解 · 首轮请求', vars: 'src dst sentence context' },
+export const REASONING_LEVELS = [
+  ['', '默认'], ['none', '关闭'], ['low', '低'], ['medium', '中'], ['high', '高'],
 ];
 
 export const DEFAULTS = {
@@ -94,10 +97,13 @@ export const DEFAULTS = {
   // 分析后端: 空 = 与页面同源 (python -m pipeline serve 的默认情形)
   apiBase: '',
   apiToken: '',
-  // 大模型 (浏览器直连)
+  // 大模型
   baseUrl: '',
   apiKey: '',
   model: 'deepseek-v4-flash',
+  reasoningEffort: '',
+  providers: [],
+  activeProviderId: '',
   targetLang: 'zh-CN',
   temperature: 0.2,
   batchSize: 8,
@@ -108,14 +114,14 @@ export const DEFAULTS = {
   // 推理型模型会先吐一大段 reasoning_content, 上限给小了就只剩思考没有正文。
   // max_tokens 只是封顶不是预付, 所以默认给到 3000。
   maxTokens: 3000,
-  jsonMode: 1,              // 服务端不支持 response_format 时自动关掉
+  jsonMode: 1,              // 先尝试结构化输出，由请求层处理兼容性
   importLang: 'ja',         // 导入音频时预选的源语言
   langs: {},                // code -> {tr, read, roman, pos, card}
   prompts: { ...DEFAULT_PROMPTS },
 };
 
 /** @type {typeof DEFAULTS} */
-export const config = { ...DEFAULTS, langs: {}, prompts: { ...DEFAULT_PROMPTS } };
+export const config = { ...DEFAULTS, providers: [], langs: {}, prompts: { ...DEFAULT_PROMPTS } };
 
 const listeners = new Set();
 
@@ -126,6 +132,41 @@ export function onConfigChange(fn) {
 
 const bit = (v, fallback) => (v === undefined || v === null ? fallback : (v ? 1 : 0));
 
+export function modelConnection(source = config) {
+  const clean = (value) => typeof value === 'string' ? value.trim() : '';
+  const effort = clean(source.reasoningEffort);
+  return {
+    baseUrl: clean(source.baseUrl),
+    apiKey: clean(source.apiKey),
+    model: clean(source.model),
+    reasoningEffort: REASONING_LEVELS.some(([level]) => level === effort) ? effort : '',
+  };
+}
+
+function modelProvider(id, source) {
+  const connection = modelConnection(source);
+  const endpoint = endpointOf(connection.baseUrl);
+  const name = (typeof source.name === 'string' && source.name.trim())
+    || (endpoint && new URL(endpoint).hostname) || '自定义服务商';
+  return { id, name, ...connection };
+}
+
+export const providerIdValid = (id) => typeof id === 'string' && /^[a-z0-9_-]{1,100}$/i.test(id);
+
+function normalizeProviders(providers) {
+  const result = new Map();
+  for (const provider of providers) {
+    if (providerIdValid(provider?.id) && !result.has(provider.id))
+      result.set(provider.id, modelProvider(provider.id, provider));
+  }
+  return [...result.values()];
+}
+
+function providerSelection(providers, id) {
+  const current = providers.find((provider) => provider.id === id) || providers[0];
+  return { providers, activeProviderId: current?.id || '', ...modelConnection(current || DEFAULTS) };
+}
+
 export function loadConfig() {
   let saved = null;
   try {
@@ -133,9 +174,17 @@ export function loadConfig() {
   } catch { /* 坏了就用默认 */ }
   if (saved && typeof saved === 'object') {
     for (const k of Object.keys(DEFAULTS)) {
-      if (k === 'prompts' || k === 'langs') continue;
+      if (['prompts', 'langs', 'providers', 'activeProviderId'].includes(k)) continue;
       if (saved[k] !== undefined && saved[k] !== null) config[k] = saved[k];
     }
+    const legacy = modelConnection({
+      baseUrl: saved.baseUrl, apiKey: saved.apiKey, model: saved.model ?? DEFAULTS.model,
+      reasoningEffort: saved.reasoningEffort,
+    });
+    const providers = Array.isArray(saved.providers) ? normalizeProviders(saved.providers) : [];
+    if (!providers.length && (legacy.baseUrl || legacy.apiKey || legacy.model !== DEFAULTS.model))
+      providers.push(modelProvider('legacy', legacy));
+    Object.assign(config, providerSelection(providers, saved.activeProviderId));
     const p = saved.prompts;
     if (p && typeof p === 'object') {
       for (const k of Object.keys(DEFAULT_PROMPTS)) {
@@ -215,26 +264,68 @@ export function setConfig(patch) {
   return config;
 }
 
-export function resetPrompt(key) {
-  if (key in DEFAULT_PROMPTS) setConfig({ prompts: { [key]: DEFAULT_PROMPTS[key] } });
-}
-
 function save() {
+  // Keep the active fields usable by callers that still write the original flat configuration.
+  if (config.activeProviderId) {
+    const connection = modelConnection();
+    config.providers = config.providers.map((provider) =>
+      provider.id === config.activeProviderId ? { ...provider, ...connection } : provider);
+  }
   try {
     localStorage.setItem(KEY, JSON.stringify(config));
   } catch { /* 隐私模式下写不进去, 本次会话内仍然生效 */ }
 }
 
-/** 有地址和模型就算能用; Key 允许为空 (自建网关常常不校验). */
-export const llmReady = () => Boolean(config.baseUrl.trim() && config.model.trim());
+function storeModelProviders(providers, id) {
+  const next = providerSelection(providers, id);
+  localStorage.setItem(KEY, JSON.stringify({ ...config, ...next }));
+  Object.assign(config, next);
+  for (const fn of listeners) fn(config, next);
+}
+
+export function saveModelProvider(draft) {
+  loadConfig();
+  const id = providerIdValid(draft.id) ? draft.id : randomId();
+  const provider = modelProvider(id, draft);
+  const providers = [...config.providers];
+  const index = providers.findIndex((item) => item.id === id);
+  if (index < 0) providers.push(provider);
+  else providers[index] = provider;
+  storeModelProviders(providers, id);
+}
+
+export function selectModelProvider(id) {
+  loadConfig();
+  if (config.providers.some((provider) => provider.id === id)) storeModelProviders(config.providers, id);
+}
+
+export function removeModelProvider(id) {
+  loadConfig();
+  const providers = config.providers.filter((provider) => provider.id !== id);
+  if (providers.length !== config.providers.length) storeModelProviders(providers, config.activeProviderId);
+}
+
+/** Key 允许为空，供无需认证的本机模型使用。 */
+export function llmReady(connection = config) {
+  const { baseUrl, model } = modelConnection(connection);
+  return Boolean(endpointOf(baseUrl) && model);
+}
 
 /** `http://host:3000` -> `http://host:3000/v1/chat/completions` */
-export function endpointOf(base = config.baseUrl) {
-  let url = String(base || '').trim().replace(/\/+$/, '');
-  if (!url) return '';
-  if (/\/chat\/completions$/.test(url)) return url;
-  if (!/\/v\d+$/.test(url)) url += '/v1';
-  return url + '/chat/completions';
+export function endpointOf(base = config.baseUrl, resource = 'chat/completions') {
+  const address = String(base || '').trim();
+  const relative = /^\/(?![\\/])/.test(address) && !address.includes('\\');
+  let url;
+  try { url = new URL(address, relative ? globalThis.location?.origin : undefined); } catch { return ''; }
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return '';
+  let path = url.pathname.replace(/\/+$/, '');
+  const explicit = /\/(?:chat\/completions|models)$/.test(path);
+  if (explicit) path = path.replace(/\/(?:chat\/completions|models)$/, '');
+  else if (url.hostname !== 'api.deepseek.com' && !/\/v\d+(?:[a-z]+\d*)?(?:\/|$)/i.test(path)) path += '/v1';
+  if (url.hostname === 'api.deepseek.com' && resource === 'models' && path === '/v1') path = '';
+  url.pathname = path + '/' + resource;
+  url.hash = '';
+  return url.href;
 }
 
 /** `{{a}}` -> vars.a; 缺的变量替换成空串, 免得提示词里漏出占位符. */

@@ -13,6 +13,7 @@ const { outputFiles } = await build({
     b.onLoad({ filter: /.*/, namespace: 'repair' }, () => ({ contents: `
       export const AUDIO_ACCEPT = '', SUB_EXT = ['srt'];
       export const attachFiles = (...args) => window.attachFiles(...args);
+      export const flushPositions = async () => {};
       export const listTracks = async () => [];
       export const missingFiles = records => records.flatMap(r => ['audio','transcript']
         .filter(kind => r[kind]?.missing).map(kind => ({id:r.id,kind,name:r[kind].name})));

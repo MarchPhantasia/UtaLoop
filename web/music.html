@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#faf9f6"><title>选歌练唱 · UtaLoop</title>
+<link rel="stylesheet" href="css/typography.css"><link rel="stylesheet" href="css/music.css"><link rel="stylesheet" href="css/navigation.css"></head>
+<body>
+<svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+  <symbol id="ic-note" viewBox="0 0 24 24"><path d="M9 17V6l11-2v11M9 9l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2.5"/><ellipse cx="17" cy="16" rx="3" ry="2.5"/></symbol>
+  <symbol id="ic-done" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.3 2.5 4.8-5"/></symbol>
+  <symbol id="ic-time" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.6 2"/></symbol>
+  <symbol id="ic-calendar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="16" rx="3"/><path d="M8 3v4m8-4v4M4 10h16m-12 5h3"/></symbol>
+  <symbol id="ic-loop" viewBox="0 0 24 24"><path d="M12 12c-2.2-3.2-3.8-4.7-6-4.7a4.7 4.7 0 0 0 0 9.4c2.2 0 3.8-1.5 6-4.7s3.8-4.7 6-4.7a4.7 4.7 0 0 1 0 9.4c-2.2 0-3.8-1.5-6-4.7Z"/></symbol>
+  <symbol id="ic-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></symbol>
+  <symbol id="ic-spark" viewBox="0 0 24 24"><path d="M10.4 2.8l1.8 4.4 4.4 1.8-4.4 1.8-1.8 4.4-1.8-4.4-4.4-1.8 4.4-1.8zM17.6 14.6l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></symbol>
+  <symbol id="ic-dots" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+  <symbol id="ic-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></symbol>
+  <symbol id="ic-pause" viewBox="0 0 24 24"><path d="M9 6v12m6-12v12"/></symbol>
+  <symbol id="ic-x" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+</defs></svg>
+<header class="mast"><div class="wrap mast-inner">
+<a class="brand" href="index.html" aria-label="UtaLoop 主曲库"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>UtaLoop</a>
+<div class="account-tools">
+  <span id="account-profile" hidden></span><button id="account" disabled>正在检查登录…</button>
+  <button id="settings" type="button" aria-haspopup="dialog" aria-controls="privacy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 7h7m5 0h4M4 17h3m5 0h8"/><circle cx="13.5" cy="7" r="2.5"/><circle cx="9.5" cy="17" r="2.5"/></svg><span>设置</span></button>
+</div>
+</div></header><main class="wrap">
+<dialog id="privacy" aria-labelledby="privacy-title">
+  <header class="privacy-head"><h2 id="privacy-title" tabindex="-1" autofocus>设置</h2>
+    <button id="privacy-close" class="close-sheet" aria-label="关闭设置">×</button></header>
+  <div class="privacy-content">
+    <a class="model-link" href="index.html#model">
+      <span class="model-mark"><svg class="line-icon" aria-hidden="true"><use href="#ic-spark"/></svg></span>
+      <span class="model-label"><b>AI 助学</b><small>模型服务商与歌词校对</small></span>
+      <span id="model-status"></span><svg class="line-icon model-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+    </a>
+    <fieldset id="playback-quality" aria-describedby="quality-hint">
+      <legend>播放音质</legend>
+      <div id="quality-options" class="quality-options"></div>
+      <p id="quality-hint">下次打开歌曲时生效。</p>
+      <p id="quality-status" role="status"></p>
+    </fieldset>
+    <section id="song-cache" aria-labelledby="song-cache-title" hidden>
+      <div class="song-cache-heading"><h3 id="song-cache-title">歌曲缓存</h3><span id="song-cache-size"></span></div>
+      <p id="song-cache-location" class="song-cache-note"></p>
+      <form id="song-cache-form" novalidate>
+        <label for="song-cache-limit">容量上限</label>
+        <div class="song-cache-actions">
+          <span class="song-cache-input"><input id="song-cache-limit" type="text" inputmode="numeric" autocomplete="off"><span>MB</span></span>
+          <button id="song-cache-save" type="submit">应用</button>
+          <button id="song-cache-clear" type="button">清理歌曲缓存</button>
+        </div>
+        <p class="song-cache-note">设为 0 MB 时只在线播放。</p>
+      </form>
+      <p id="song-cache-message" class="song-cache-note" role="status"></p>
+    </section>
+    <div class="privacy-profile"><i class="record-icon" aria-hidden="true"></i><b>网易云音乐</b><span id="privacy-account"></span></div>
+    <fieldset id="retention" aria-describedby="retention-description" disabled><legend>登录保留时间</legend>
+      <div class="periods">
+        <label><input type="radio" name="mode" value="session"><svg class="line-icon" aria-hidden="true"><use href="#ic-time"/></svg><b>仅本次</b></label>
+        <label><input type="radio" name="mode" value="30d" checked><svg class="line-icon" aria-hidden="true"><use href="#ic-calendar"/></svg><b>30 天</b></label>
+        <label><input type="radio" name="mode" value="long"><svg class="line-icon" aria-hidden="true"><use href="#ic-loop"/></svg><b>长期记住</b></label>
+      </div>
+    </fieldset>
+    <p id="retention-description"></p>
+    <p class="privacy-note"><svg class="line-icon" aria-hidden="true"><use href="#ic-lock"/></svg><span>凭证仅用于本机连接网易云。授权失效后需重新扫码。</span></p>
+    <p id="retention-status" role="status"></p>
+  </div>
+  <footer><button id="forget" type="button" hidden>退出并清除登录</button><button id="privacy-done" type="button">完成</button></footer>
+</dialog>
+<dialog id="lyric-batch" aria-labelledby="batch-title">
+  <header class="privacy-head"><h2 id="batch-title" tabindex="-1">批量歌词标注</h2>
+    <button id="batch-close" class="close-sheet" type="button" aria-label="关闭批量歌词标注">×</button></header>
+  <div class="privacy-content">
+    <fieldset id="batch-pick" aria-labelledby="batch-count">
+      <div class="batch-pick-head"><b id="batch-count"></b><button id="batch-toggle" type="button">取消全选</button></div>
+      <div id="batch-songs"></div>
+    </fieldset>
+    <div class="batch-actions">
+      <button id="batch-dictionary" type="button"><b>词典批量标注</b><span>补齐缺失的分词和注音</span></button>
+      <button id="batch-export" type="button"><b>导出校对包</b><span>保存歌词和现有标注，供人工校对</span></button>
+      <button id="batch-import" type="button"><b>导入校对结果</b><span>将文件里的校对应用到本机曲目</span></button>
+      <button id="batch-model" type="button" hidden><b>大模型校对</b><span>将所选歌词和注音发送至已配置的接口</span></button>
+      <a id="batch-model-settings" href="index.html#model"><b>配置 AI 助学</b><span>设置接口地址、API Key 和模型</span></a>
+    </div>
+    <input id="batch-file" type="file" accept=".json,application/json" hidden>
+    <ul id="batch-errors" hidden></ul>
+  </div>
+  <footer><p id="batch-status" role="status"></p><button id="batch-done" type="button">完成</button></footer>
+</dialog>
+<section id="login" hidden><img width="158" height="158" alt="网易云登录二维码" id="qr"><div><h2>用网易云音乐扫码</h2><p id="scan" role="status"></p><button id="cancel">关闭</button></div></section>
+<div class="discovery-head">
+<h1 id="home-title">选歌练唱</h1>
+<button id="search-home" class="crumb" hidden>‹　选歌练唱</button>
+<div class="search-field">
+  <form id="search" role="search" novalidate>
+    <i class="glass" aria-hidden="true"></i>
+    <input type="search" id="query" enterkeyhint="search" aria-label="搜索歌名或歌手" aria-describedby="search-error" placeholder="搜索歌名或歌手" required maxlength="128">
+    <button id="search-clear" class="search-clear" type="button" aria-label="清空搜索" hidden><svg class="line-icon" aria-hidden="true"><use href="#ic-x"/></svg></button>
+    <button id="search-submit" type="submit"><span id="search-label">搜索</span><i class="search-sign" aria-hidden="true"></i></button>
+  </form>
+  <p id="search-error" role="status"></p>
+</div>
+</div>
+<section id="overview">
+<h2>我的网易云</h2><div class="collections">
+<a class="collection likes" href="#likes"><span class="jacket"><img src="assets/collection-vinyl.webp" alt="" width="800" height="600"></span><span class="caption"><span>喜欢的音乐</span><i aria-hidden="true">↗</i></span></a>
+<a class="collection folders" href="#folders"><span class="jacket"><img src="assets/collection-tapes.webp" alt="" width="800" height="600"></span><span class="caption"><span>我的歌单</span><i aria-hidden="true">↗</i></span></a>
+</div><h2>学习清单</h2><div class="study-links">
+<a href="#learning"><span class="study-emblem"><svg class="line-icon" aria-hidden="true"><use href="#ic-note"/></svg></span><b>在学</b><small id="count-learning">—</small></a>
+<a href="#learned"><span class="study-emblem"><svg class="line-icon" aria-hidden="true"><use href="#ic-done"/></svg></span><b>已学</b><small id="count-learned">—</small></a>
+<a href="#recent"><span class="study-emblem"><svg class="line-icon" aria-hidden="true"><use href="#ic-time"/></svg></span><b>最近练唱</b><small id="count-recent">—</small></a>
+</div></section>
+<section id="detail" hidden><button id="back" class="crumb">‹　选歌练唱</button>
+<div class="detail-head">
+  <span id="detail-cover" aria-hidden="true"></span><div><p id="source-label"></p><h1 id="heading" tabindex="-1"></h1><p id="meta"></p></div>
+  <button id="batch-lyrics" type="button" aria-haspopup="dialog" hidden><svg class="line-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span>批量标注</span></button>
+  <div id="search-kinds" role="group" aria-label="搜索类型" hidden>
+    <button type="button" data-kind="song" aria-pressed="true">歌曲</button>
+    <button type="button" data-kind="artist" aria-pressed="false">歌手</button>
+  </div>
+</div>
+<div id="collection-tools" hidden>
+  <form id="collection-search" role="search" aria-label="歌单内搜索">
+    <i class="glass" aria-hidden="true"></i>
+    <input id="collection-query" type="search" placeholder="搜歌名或歌手" aria-label="在歌单中搜索歌名、歌手" maxlength="128" enterkeyhint="search">
+    <button id="collection-clear" class="search-clear" type="button" aria-label="清空歌单搜索" hidden><svg class="line-icon" aria-hidden="true"><use href="#ic-x"/></svg></button>
+  </form>
+  <details id="collection-sort"><summary aria-label="歌单排序"><svg class="line-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h14M3 12h10M3 18h6m9-8v10m-3-3 3 3 3-3"/></svg><span id="sort-label">歌单原序</span></summary>
+    <fieldset><legend>排序方式</legend>
+      <label><input type="radio" name="collection-order" value="original" checked><span id="original-order-label">歌单原序</span></label>
+      <label><input type="radio" name="collection-order" value="reverse">倒序排列</label>
+      <label><input type="radio" name="collection-order" value="title">歌名顺序</label>
+      <label><input type="radio" name="collection-order" value="artist">歌手顺序</label>
+      <label><input type="radio" name="collection-order" value="short">时长从短到长</label>
+      <label><input type="radio" name="collection-order" value="long">时长从长到短</label>
+    </fieldset>
+  </details>
+</div>
+<div id="list-head" hidden>歌曲</div>
+<div id="viewport" role="region" aria-label="曲目与歌单" tabindex="0"><div id="results"></div></div>
+<button id="more" hidden>加载更多</button><button id="authenticate" hidden>扫码登录</button></section>
+<p id="status" role="status"></p>
+<div id="song-popup" hidden>
+  <div id="song-menu" role="menu" aria-label="歌曲操作">
+    <button type="button" value="resume" role="menuitem" tabindex="-1" hidden>
+      <svg class="line-icon" aria-hidden="true"><use href="#ic-time"/></svg><span>继续练唱</span>
+    </button>
+    <button type="button" value="open" role="menuitem" tabindex="-1">
+      <svg class="line-icon" aria-hidden="true"><use href="#ic-play"/></svg><span>打开练唱页</span>
+    </button>
+    <div class="song-menu-divider" role="separator"></div>
+    <div role="group" aria-label="学习状态">
+      <button type="button" value="learning" role="menuitemradio" aria-checked="false" tabindex="-1">
+        <svg class="line-icon" aria-hidden="true"><use href="#ic-note"/></svg><span>在学</span>
+      </button>
+      <button type="button" value="learned" role="menuitemradio" aria-checked="false" tabindex="-1">
+        <svg class="line-icon" aria-hidden="true"><use href="#ic-done"/></svg><span>已学</span>
+      </button>
+      <button class="song-menu-reset" type="button" value="" role="menuitem" tabindex="-1" hidden>
+        <svg class="line-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg><span>标为未学</span>
+      </button>
+    </div>
+  </div>
+  <p id="song-menu-error" role="status"></p>
+</div>
+<div id="toast" class="music-toast" role="status"></div>
+</main>
+<aside id="music-mini" class="mini-player" aria-label="迷你播放器" hidden>
+  <button id="music-mini-return" class="mini-return" type="button" aria-label="回到练唱" title="回到练唱">
+    <span class="mini-sleeve" aria-hidden="true"><svg class="line-icon"><use href="#ic-note"/></svg><img id="music-mini-cover" alt=""></span>
+    <span class="mini-text"><strong id="music-mini-title"></strong><small id="music-mini-artist"></small></span>
+    <svg class="line-icon mini-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 16l8-8m-7 0h7v7"/></svg>
+  </button>
+  <button id="music-mini-toggle" class="mini-toggle" type="button" aria-label="播放音乐" disabled>
+    <svg class="line-icon mini-play" aria-hidden="true"><use href="#ic-play"/></svg>
+    <svg class="line-icon mini-pause" aria-hidden="true"><use href="#ic-pause"/></svg>
+  </button>
+</aside>
+<script type="module" src="js/music-page.js"></script></body></html>

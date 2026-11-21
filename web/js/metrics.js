@@ -16,7 +16,7 @@ const PROBE_HTML =
   '<div class="s"><div class="s-words"><span class="w">' +
   '<span class="w-read">あ</span><span class="w-text">あ</span>' +
   '<i class="w-bar"><i class="w-fill"></i></i><span class="w-roman">a</span>' +
-  '</span></div><p class="s-tr">あ</p></div>';
+  '</span></div><p class="s-source-roman">a</p><p class="s-tr">あ</p></div>';
 
 const px = (v) => parseFloat(v) || 0;
 
@@ -46,22 +46,27 @@ export class Metrics {
     const csW = getComputedStyle(words);
     const csC = getComputedStyle(chip);
     const csTr = getComputedStyle(s.lastElementChild);
+    const csSource = getComputedStyle(s.lastElementChild.previousElementSibling);
     const csA = getComputedStyle(readEl);
     const csB = getComputedStyle(textEl);
     const csR = getComputedStyle(romanEl);
 
     const chipH = layoutHeight(chip);
+    const songLyrics = document.documentElement.hasAttribute('data-song-lyrics');
     const sig = [
-      chipH, csW.columnGap, csW.rowGap, csS.padding, csC.padding,
+      songLyrics, chipH, csW.columnGap, csW.rowGap, csS.padding, csC.padding,
       csA.font, csB.font, csR.font, csA.display, csR.display,
-      csTr.font, csTr.lineHeight, csTr.marginTop, contentWidth,
+      csTr.font, csTr.lineHeight, csTr.marginTop, csSource.font, contentWidth,
     ].join('|');
     const changed = sig !== this._sig;
     this._sig = sig;
     if (changed) this.cache.clear();
 
     this.width = contentWidth;
+    this.songLyrics = songLyrics;
     this.chipH = chipH;
+    this.readH = csA.display === 'none' ? 0 : px(csA.lineHeight);
+    this.romanH = csR.display === 'none' ? 0 : px(csR.lineHeight);
     this.colGap = px(csW.columnGap);
     this.rowGap = px(csW.rowGap);
     this.padX = px(csS.paddingLeft) + px(csS.paddingRight);
@@ -78,6 +83,8 @@ export class Metrics {
       { key: 'roman', tag: 'c', font: fontOf(csR), ls: px(csR.letterSpacing), on: csR.display !== 'none' },
     ];
     this.trLayer = { tag: 't', font: fontOf(csTr), ls: px(csTr.letterSpacing) };
+    this.sourceLayer = { tag: 'r', font: fontOf(csSource), ls: px(csSource.letterSpacing) };
+    this.sourceH = px(csSource.lineHeight);
     this.avail = Math.max(40, contentWidth - this.padX);
     return changed;
   }
@@ -94,7 +101,7 @@ export class Metrics {
     return v;
   }
 
-  chipWidth(word) {
+  _columnWidth(word) {
     let max = 0;
     for (const layer of this.layers) {
       if (!layer.on) continue;
@@ -103,13 +110,23 @@ export class Metrics {
       const w = this._measure(text, layer);
       if (w > max) max = w;
     }
-    return Math.min(this.avail, max + this.chipPad);
+    return max;
+  }
+
+  _wordWidth(word) {
+    return word.lyricParts?.length
+      ? word.lyricParts.reduce((width, part) => width + this._columnWidth(part), 0)
+      : this._columnWidth(word);
+  }
+
+  chipWidth(word) {
+    return Math.min(this.avail, this._wordWidth(word) + this.chipPad);
   }
 
   /** 超宽文字层单独缩小, 与 Reader 写入的字号比例共用同一套宽度测量. */
   layerScale(word, layer) {
     if (!layer.on) return 1;
-    const width = this._measure(word[layer.key], layer);
+    const width = word.lyricParts?.length ? this._wordWidth(word) : this._measure(word[layer.key], layer);
     const limit = Math.max(1, this.avail - this.chipPad - 0.5);
     return width > limit ? Math.floor(limit / width * 10000) / 10000 : 1;
   }
@@ -130,10 +147,19 @@ export class Metrics {
 
   sentenceHeight(sentence, showTr) {
     const lines = this.lineCount(sentence.words, sentence.analyzed === false);
-    let h = this.padY + lines * this.chipH + (lines - 1) * this.rowGap;
+    let chipH = this.chipH;
+    if (this.songLyrics) {
+      if (!sentence.words.some(w => w.read)) chipH -= this.readH;
+      if (!sentence.words.some(w => w.roman)) chipH -= this.romanH;
+    }
+    let h = this.padY + lines * chipH + (lines - 1) * this.rowGap;
     if (showTr && sentence.translation) {
       const w = this._measure(sentence.translation, this.trLayer);
       h += this.trTop + Math.max(1, Math.ceil((w - 0.5) / this.avail)) * this.trH;
+    }
+    if (!this.songLyrics && sentence.sourceRoman && this.layers[2].on) {
+      const width = this._measure(sentence.sourceRoman, this.sourceLayer);
+      h += this.trTop + Math.max(1, Math.ceil((width - 0.5) / this.avail)) * this.sourceH;
     }
     return Math.round(h);
   }

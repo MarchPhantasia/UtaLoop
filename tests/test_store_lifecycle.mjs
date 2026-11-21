@@ -201,6 +201,17 @@ test('only a failure on the first open switches a document to memory storage', a
   assert.equal(await store.get('tracks', 'mem'), undefined);
 });
 
+test('an older app never switches a newer database to an empty memory library', async () => {
+  fake.openError = new DOMException('The database already has a newer version', 'VersionError');
+  const fresh = await import('../web/js/store.js?newer-database');
+  await assert.rejects(fresh.values('tracks', { strict: true }), /较新版本.*最新版/);
+  await assert.rejects(fresh.writeBatch({ tracks: [{ key: 'rollback', value: 'invalid' }] }), /较新版本/);
+  assert.equal(fresh.isDegraded(), false);
+  fake.openError = null;
+  assert.equal(await fresh.get('tracks', 'rollback', { strict: true }), undefined);
+  assert.equal(await fresh.get('tracks', 'k1', { strict: true }), 4);
+});
+
 test('an open interrupted by the back/forward cache is retried, not treated as unavailable storage', async () => {
   const fresh = await import('../web/js/store.js?open-interrupted');
   fake.deferOpen = true;

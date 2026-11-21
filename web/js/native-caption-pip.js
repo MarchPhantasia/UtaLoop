@@ -19,9 +19,10 @@ export function setupNativeCaptionPip({ bridge, media, engine, onStateChange }) 
     rate: media.playbackRate || 1, paused: media.paused || media.ended || stalled,
     playing: !media.paused && !media.ended,
     captionSize: trackCfg.video.captionSize, showTranslation: document.documentElement.dataset.tr !== '0' });
-  const timeline = () => (engine.track?.sentences || []).map((sentence, i) => ({
-    start: engine.track.sStart[i], ...pipLines(sentence, true),
-  }));
+  const timeline = () => (engine.track?.sentences || []).map((sentence, i) => {
+    const start = engine.track.sStart[i];
+    return { start: engine.toMediaTime?.(start) ?? start, ...pipLines(sentence, true) };
+  });
 
   function clear() {
     media.disablePictureInPicture = originalDisablePip;

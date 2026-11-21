@@ -17,6 +17,7 @@ import { sourceSpec } from './langs.js';
 const EMPTY_I32 = new Int32Array(0);
 
 const MIN_WORD_DUR = 0.02;
+const isTimedWord = word => word.start != null && word.pos !== 'punct' && word.text.trim() !== '';
 
 export class Track {
   /**
@@ -65,7 +66,7 @@ export class Track {
       // 后端不再下发空译文字段, 这里补上, 免得各处判 undefined
       if (s.translation === undefined) s.translation = '';
       if (s.wordTiming) {
-        for (const w of s.words) if (w.pos !== 'punct' && w.start != null) n++;
+        for (const w of s.words) if (isTimedWord(w)) n++;
       }
     }
     this.N = n;
@@ -84,7 +85,7 @@ export class Track {
         const words = s.words;
         for (let j = 0; j < words.length; j++) {
           const w = words[j];
-          if (w.pos === 'punct' || w.start == null) continue;
+          if (!isTimedWord(w)) continue;
           this.wStart[k] = w.start;
           this.wEnd[k] = Math.max(w.end, w.start + MIN_WORD_DUR);
           this.wSent[k] = i;

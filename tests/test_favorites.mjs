@@ -27,7 +27,8 @@ const draft = (id, extra = {}) => fav.favoriteDraft({ track: track(id), i: 0, j:
 test('v4 upgrades add favorites without changing existing media records', async () => {
   assert.equal(fake.data.has('favorites'), false);
   assert.deepEqual(await fav.listFavorites(), []);
-  assert.equal(fake.version, 6);
+  assert.equal(fake.version, 7);
+  assert.ok(fake.data.has('study'));
   assert.equal((await store.get('tracks', 'legacy')).title, '旧媒体');
   await store.del('tracks', 'legacy');
 });
@@ -153,7 +154,7 @@ test('backups round-trip independent favorites and remap their IDs and source tr
   const exported = await backup.exportBackup({ includeCredentials: false });
   const parsed = backup.parseBackup(JSON.stringify(exported));
   assert.ok(parsed.stores.favorites.length > 0);
-  assert.equal(parsed.version, 2);
+  assert.equal(parsed.version, backup.BACKUP_VERSION);
   const current = await store.snapshot(backup.BACKUP_STORES);
   const plan = backup.prepareImport(parsed, current, {});
   const original = parsed.stores.favorites[0], imported = plan.batches.favorites[0];
@@ -165,7 +166,8 @@ test('backups round-trip independent favorites and remap their IDs and source tr
   assert.deepEqual(imported.value.learning, original.value.learning);
   await store.writeBatch(plan.batches, { addOnly: true });
   assert.deepEqual(await fav.getFavorite(imported.key), imported.value);
-  const legacy = structuredClone(exported); legacy.version = 1; delete legacy.stores.favorites;
+  const legacy = structuredClone(exported); legacy.version = 1;
+  delete legacy.stores.favorites; delete legacy.stores.study;
   assert.equal(backup.parseBackup(JSON.stringify(legacy)).version, 1);
   assert.equal(backup.prepareImport(legacy, current, {}).batches.favorites.length, 0);
   const corrupt = structuredClone(exported); corrupt.stores.favorites[0].value.mastered = 'yes';

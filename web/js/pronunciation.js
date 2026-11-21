@@ -14,22 +14,24 @@ import { preparePronunciationPlayback } from './playback-session.js';
 const speechRestartAt = new WeakMap();
 const IOS_SPEECH_RESTART_MS = 150;
 
-export function wordAudioRange(sentence, word, duration) {
+export function wordAudioRange(sentence, word, duration, lyricOffset = 0) {
   if (!sentence?.wordTiming || word?.pos === 'punct' ||
       !Number.isFinite(word?.start) || !Number.isFinite(word?.end) || word.start < 0 || word.end <= word.start) return null;
   const limit = Number.isFinite(duration) && duration > 0 ? duration : Infinity;
-  if (word.start >= limit) return null;
-  const start = Math.max(0, word.start - .04);
-  const end = Math.min(limit, word.end + .08);
+  const from = word.start + lyricOffset, to = word.end + lyricOffset;
+  if (from >= limit || to <= 0) return null;
+  const start = Math.max(0, from - .04);
+  const end = Math.min(limit, to + .08);
   return end > start ? { start, end } : null;
 }
 
 /** 句子收藏的显式片段范围, 不伪造词级时间戳。 */
-export function clipAudioRange(range, duration) {
+export function clipAudioRange(range, duration, lyricOffset = 0) {
   if (!Number.isFinite(range?.start) || !Number.isFinite(range?.end) || range.start < 0 || range.end <= range.start) return null;
   const limit = Number.isFinite(duration) && duration > 0 ? duration : Infinity;
-  const end = Math.min(range.end, limit);
-  return end > range.start ? { start: range.start, end } : null;
+  const start = Math.max(0, range.start + lyricOffset);
+  const end = Math.min(range.end + lyricOffset, limit);
+  return end > start ? { start, end } : null;
 }
 
 export function speechVoices(synth = globalThis.speechSynthesis) {
@@ -86,10 +88,10 @@ export function supportsSystemSpeech() {
 }
 
 /** 一张卡一个会话; stop/dispose 使所有迟到的媒体事件、Blob 读取与 play() 失效。 */
-export function createPronunciation({ track, sentence, word, audioRange, getAudioBlob, onState = () => {} }) {
+export function createPronunciation({ track, sentence, word, audioRange, lyricOffset, getAudioBlob, onState = () => {} }) {
   let serial = 0, disposed = false, cleanup = () => {}, active = '';
   const publish = (state, source = '', message = '') => onState({ state, source, message });
-  const rangeFor = (duration) => audioRange ? clipAudioRange(audioRange, duration) : wordAudioRange(sentence, word, duration);
+  const rangeFor = (duration) => audioRange ? clipAudioRange(audioRange, duration) : wordAudioRange(sentence, word, duration, lyricOffset);
   const stop = () => {
     serial++;
     cleanup(); cleanup = () => {}; active = '';

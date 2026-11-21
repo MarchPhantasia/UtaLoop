@@ -1,10 +1,10 @@
-import { el } from './util.js';
+import { el, toast } from './util.js';
 import { openSheet } from './sheet.js';
 import { group, infoRow, sectionTitle, segRow, stepRow, button, buttonBar } from './rows.js';
 import { config } from './config.js';
 import { sourceLangs } from './langs.js';
 import {
-  applyFontSizes, fontSizes, setLangFontSize, resetLangFontSizes,
+  applyFontSizes, fontSizes, setLangFontSize, setLangFontSizes, resetLangFontSizes,
   FONT_SIZE_MIN, FONT_SIZE_MAX, FONT_SIZE_STEP,
   settings, captionSize, setLangCaptionSize, resetLangCaptionSize,
 } from './settings.js';
@@ -40,6 +40,10 @@ const TRANSLATIONS = {
   'zh-CN': '我们听了音乐', 'zh-TW': '我們聽了音樂',
   en: 'We listened to music', ja: '私たちは音楽を聴きました', ko: '우리는 음악을 들었어요',
 };
+const LYRIC_SAMPLE = [['星', 'ほし', 'hoshi'], ['の', '', 'no'], ['声', 'こえ', 'koe']];
+const LYRIC_TRANSLATIONS = {
+  'zh-CN': '星星的声音', 'zh-TW': '星星的聲音', en: 'The sound of the stars', ja: '星の声', ko: '별들의 소리',
+};
 const SIZE_OPT = { min: FONT_SIZE_MIN, max: FONT_SIZE_MAX, step: FONT_SIZE_STEP, unit: 'px' };
 
 export function previewSentence(spec, track, layers) {
@@ -51,7 +55,8 @@ export function previewSentence(spec, track, layers) {
   preview.setAttribute('role', 'region');
   preview.setAttribute('aria-label', '字幕例句');
   const words = el('div', 'font-preview-words');
-  const sample = SAMPLES[spec.code];
+  const lyricSample = track?.raw?.sourceLyrics && spec.code === 'ja';
+  const sample = lyricSample ? LYRIC_SAMPLE : SAMPLES[spec.code];
   const sentence = sample ? null : track?.sentences.find((s) => s.words.length);
   const entries = sample || sentence?.words.map((w) => [w.text, w.read, w.roman]) || [[spec.native || spec.name]];
   for (const [text, read, roman] of entries) {
@@ -67,14 +72,116 @@ export function previewSentence(spec, track, layers) {
   preview.append(words);
   if (layers.includes('tr')) {
     const target = track ? trackCfg.lang : config.targetLang;
-    const translation = sample ? (TRANSLATIONS[target] || TRANSLATIONS['zh-CN']) : sentence?.translation;
+    const translations = lyricSample ? LYRIC_TRANSLATIONS : TRANSLATIONS;
+    const translation = sample ? (translations[target] || translations['zh-CN']) : sentence?.translation;
     if (translation) {
       const tr = el('p', 'font-preview-tr', translation);
-      tr.lang = target;
+      tr.lang = sample && !translations[target] ? 'zh-CN' : target;
       preview.append(tr);
     }
   }
   return preview;
+}
+
+function fontLayers(spec) {
+  const supports = (key) => !spec.features?.length || spec.features.includes(key);
+  return ['text', ...(spec.layerOrder || []).filter((key) => ['read', 'roman'].includes(key) && supports(key)),
+    ...(supports('tr') ? ['tr'] : [])];
+}
+
+function trackSpec(track) {
+  return { code: track.lang, name: track.langName, spaceDelimited: track.space,
+    layers: track.layers, layerOrder: track.layerOrder, features: track.features };
+}
+
+function systemFonts(preview, spec, track) {
+  const code = spec.code;
+  const text = [...preview.querySelectorAll('.font-preview-text')].map((node) => node.textContent)
+    .join(spec.spaceDelimited === false ? '' : ' ');
+  const translation = preview.querySelector('.font-preview-tr');
+  const caption = captionPreview(text, translation?.textContent || '', {
+    sourceLang: code, targetLang: translation?.lang || '',
+  });
+  const get = () => track ? trackCfg.video.captionSize : captionSize(code);
+  const row = stepRow('系统字幕字号', '用于画中画和悬浮窗', get, (captionSize) => {
+    if (track) setVideoCfg({ captionSize });
+    else setLangCaptionSize(code, captionSize);
+    caption.update(get());
+  }, { min: 12, max: 36, step: 1, unit: 'px' });
+  const reset = button(track ? '恢复语言默认系统字号' : '恢复默认系统字号', {
+    onPick: () => {
+      if (track) resetVideoCfg(['captionSize']);
+      else resetLangCaptionSize(code);
+      row.refresh();
+      caption.update(get());
+    },
+  });
+  caption.update(get());
+  return [caption.element, group(row), buttonBar(reset)];
+}
+
+function openLyricFontSheet(track, { onClose, onBack }) {
+  const spec = trackSpec(track);
+  const layers = fontLayers(spec);
+  const preview = previewSentence(spec, track, layers);
+  preview.classList.add('lyric-font-preview');
+  preview.setAttribute('aria-label', '歌词预览');
+  const body = el('div', 'lyric-font-pane');
+  const controls = el('div', 'lyric-font-controls');
+  const get = () => fontSizes(track.lang, trackCfg.fonts);
+  let sizes = get();
+  const sliders = layers.map((layer) => {
+    const key = layer + 'Size';
+    const row = el('div', 'lyric-font-row');
+    const label = el('label', '', layer === 'text' ? '歌词原文' : layer === 'tr' ? '译文'
+      : layer === 'read' && track.lang === 'ja' ? '假名注音' : spec.layers?.[layer] || (layer === 'read' ? '注音' : '转写'));
+    const range = el('input', 'lyric-font-slider');
+    range.id = 'lyric-font-' + layer;
+    range.type = 'range';
+    range.min = FONT_SIZE_MIN;
+    range.max = FONT_SIZE_MAX;
+    range.step = FONT_SIZE_STEP;
+    label.htmlFor = range.id;
+    const value = el('output', 'lyric-font-value');
+    value.setAttribute('aria-hidden', 'true');
+    const paintValue = () => {
+      value.value = `${sizes[key]} px`;
+      range.setAttribute('aria-valuetext', `${sizes[key]} 像素`);
+      range.style.setProperty('--font-slider-fill', `${(sizes[key] - FONT_SIZE_MIN) / (FONT_SIZE_MAX - FONT_SIZE_MIN) * 100}%`);
+    };
+    const refresh = () => { range.value = sizes[key]; paintValue(); };
+    range.addEventListener('input', () => {
+      sizes[key] = range.valueAsNumber;
+      paintValue();
+      applyFontSizes(sizes, preview);
+    });
+    range.addEventListener('change', () => setTrackFontSize(key, range.valueAsNumber));
+    row.append(label, range, value);
+    controls.append(row);
+    return refresh;
+  });
+  const refresh = () => {
+    sizes = get();
+    applyFontSizes(sizes, preview);
+    sliders.forEach((paint) => paint());
+  };
+  const caption = el('details', 'lyric-font-caption');
+  caption.append(el('summary', '', '小窗字幕字号'), ...systemFonts(preview, spec, track));
+  body.append(preview, controls, caption);
+  const footer = buttonBar(
+    button('恢复语言默认', { onPick: () => { resetTrackFontSizes(); refresh(); } }),
+    button(`设为${track.langName}默认`, { main: true, onPick: () => {
+      setLangFontSizes(track.lang, get());
+      toast('已保存为' + track.langName + '默认字号');
+    } }),
+  );
+  refresh();
+  let finish = () => {};
+  openSheet('歌词字号', body, {
+    cls: 'lyric-font-sheet', footer, onBack,
+    onClose: () => { finish(); onClose?.(); },
+  });
+  finish = deferTrackFontSizes();
 }
 
 /**
@@ -84,6 +191,7 @@ export function previewSentence(spec, track, layers) {
  * (以前那枚返回箭头在设置页里做的就是同一件事, 两个按钮挨在一起只会让人犹豫).
  */
 export function openFontSheet({ track = null, video = false, onClose, onBack } = {}) {
+  if (track?.raw?.sourceLyrics && !video) return openLyricFontSheet(track, { onClose, onBack });
   const list = sourceLangs();
   let code = list.find((spec) => spec.code === config.importLang)?.code || list[0].code;
   const body = el('div', 'font-pane');
@@ -110,36 +218,10 @@ export function openFontSheet({ track = null, video = false, onClose, onBack } =
 
   function paint() {
     landscape?.dispose();
-    const spec = track ? {
-      code: track.lang, name: track.langName, spaceDelimited: track.space,
-      layers: track.layers, layerOrder: track.layerOrder, features: track.features,
-    } : list.find((item) => item.code === code);
-    const supports = (key) => !spec.features?.length || spec.features.includes(key);
-    const layers = ['text', ...(spec.layerOrder || []).filter((key) =>
-      ['read', 'roman'].includes(key) && supports(key)), ...(supports('tr') ? ['tr'] : [])];
+    const spec = track ? trackSpec(track) : list.find((item) => item.code === code);
+    const layers = fontLayers(spec);
     const preview = previewSentence(spec, track, layers);
     landscape = video ? videoPreview(preview, () => ({ ...(track ? trackCfg.video : settings.video), subtitles: 1 })) : null;
-    const text = [...preview.querySelectorAll('.font-preview-text')].map((node) => node.textContent)
-      .join(spec.spaceDelimited === false ? '' : ' ');
-    const translation = preview.querySelector('.font-preview-tr');
-    const caption = captionPreview(text, translation?.textContent || '', {
-      sourceLang: code, targetLang: translation?.lang || '',
-    });
-    const getCaptionSize = () => track ? trackCfg.video.captionSize : captionSize(code);
-    const captionHint = '仅影响画中画和悬浮窗中字幕的大小';
-    const captionRow = stepRow('系统字幕字号', captionHint, getCaptionSize, (captionSize) => {
-      if (track) setVideoCfg({ captionSize });
-      else setLangCaptionSize(code, captionSize);
-      caption.update(getCaptionSize());
-    }, { min: 12, max: 36, step: 1, unit: 'px' });
-    const resetCaption = button(track ? '恢复语言默认系统字号' : '恢复默认系统字号', {
-      onPick: () => {
-        if (track) resetVideoCfg(['captionSize']);
-        else resetLangCaptionSize(code);
-        captionRow.refresh();
-        caption.update(getCaptionSize());
-      },
-    });
     const get = () => fontSizes(code, track ? trackCfg.fonts : {});
     fitPreview = () => {
       if (!preview.isConnected) return;
@@ -176,9 +258,7 @@ export function openFontSheet({ track = null, video = false, onClose, onBack } =
       },
     });
     content.replaceChildren(sectionTitle(video ? '横屏视频示例' : '例句'), landscape?.element || preview,
-      group(...rows), buttonBar(reset), sectionTitle('系统字幕'), caption.element,
-      group(captionRow), buttonBar(resetCaption));
-    caption.update(getCaptionSize());
+      group(...rows), buttonBar(reset), sectionTitle('系统字幕'), ...systemFonts(preview, spec, track));
     updatePreview();
   }
 

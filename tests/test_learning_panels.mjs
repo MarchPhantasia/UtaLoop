@@ -14,6 +14,7 @@ const { outputFiles } = await build({ stdin: { contents: `
   export { plainTrack } from './web/js/subtitles.js';
   export { Track } from './web/js/track.js';
   export { translationKey } from './web/js/translate.js';
+  export { wordMeaningKeys } from './web/js/favorite-learning.js';
   export { config } from './web/js/config.js';
   export const start = () => import('./web/js/main.js');`,
   resolveDir: fileURLToPath(new URL('../', import.meta.url)) },
@@ -21,8 +22,9 @@ const { outputFiles } = await build({ stdin: { contents: `
 const html = await readFile(new URL('../web/player.html', import.meta.url), 'utf8');
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-async function harness(t, kind = 'audio', { plain = false, favoriteTime } = {}) {
-  const dom = new JSDOM(html, { url: 'https://localhost/player.html?track=lesson&debug',
+async function harness(t, kind = 'audio', { plain = false, favoriteTime, checkpoint, openAtCheckpoint = false, rate } = {}) {
+  const url = 'https://localhost/player.html?track=lesson&debug' + (openAtCheckpoint ? '&checkpoint=1' : '');
+  const dom = new JSDOM(html, { url,
     runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window, doc = w.document, errors = [], calls = [];
   w.structuredClone = structuredClone;
@@ -76,9 +78,12 @@ async function harness(t, kind = 'audio', { plain = false, favoriteTime } = {}) 
   Object.defineProperties(video, { videoWidth: { value: 1280 }, videoHeight: { value: 720 } });
   w.eval(outputFiles[0].text);
   const api = w.PanelTest;
+  if (rate !== undefined) w.localStorage.setItem('linguatrack.settings.v1', JSON.stringify({ rate }));
   w.localStorage.setItem('linguatrack.track.lesson', JSON.stringify({ tr: 0, card: 1 }));
   await api.put('tracks', 'lesson', { id: 'lesson', title: 'Lesson', lang: 'en', status: 'ready',
-    duration: 30, audio: { name: kind === 'video' ? 'lesson.mp4' : 'lesson.wav', type: `${kind}/test` } });
+    duration: 30, position: checkpoint === undefined ? 0 : 17,
+    audio: { name: kind === 'video' ? 'lesson.mp4' : 'lesson.wav', type: `${kind}/test` } });
+  if (checkpoint !== undefined) await api.put('study', 'lesson', { track: 'lesson', state: 'learned', checkpoint, practiced: 123 });
   await api.put('audio', 'lesson', new w.Blob(['fixture']));
   await api.put('data', 'lesson', { id: 'lesson', schemaVersion: 2, audio: { duration: 30 },
     lang: { code: 'en', spaceDelimited: true, layers: {}, layerOrder: [], features: ['card', 'pos'] },
@@ -162,6 +167,210 @@ for (const favoriteTime of [0, 28]) test(`favorite entry at ${favoriteTime}s ove
   assert.equal(h.media.paused, true);
 });
 
+test('manual study progress is independent from seeking and moves only when saved again', async t => {
+  const h = await harness(t);
+  h.media.currentTime = 12.25;
+  h.find('#saveCheckpoint').click();
+  await flush();
+  assert.equal((await h.api.get('study', 'lesson')).checkpoint, 12.25);
+  assert.equal((await h.api.get('study', 'lesson')).state, 'learning');
+  h.media.currentTime = 4;
+  h.w.LT.engine.setRepeat(1);
+  h.find('#resumeCheckpoint').click();
+  h.frame();
+  assert.equal(h.media.currentTime, 12.25);
+  assert.equal(h.media.paused, true);
+  assert.equal((await h.api.get('study', 'lesson')).checkpoint, 12.25);
+  h.media.currentTime = 9;
+  h.find('#saveCheckpoint').click();
+  await flush();
+  assert.equal((await h.api.get('study', 'lesson')).checkpoint, 9);
+});
+
+test('lyric sync moves cue boundaries, word seeking and sentence loops without interrupting playback', async t => {
+  const h = await harness(t, 'audio', { checkpoint: 12.25 });
+  const engine = h.w.LT.engine;
+  await h.media.play();
+  h.calls.length = 0;
+  h.media.currentTime = 9.9;
+  h.frame();
+  assert.equal(engine.reader.activeS, 0);
+
+  h.find('#btnLyricSync').click();
+  h.find('#lyricSyncEarlier').click();
+  h.frame();
+  assert.equal(h.find('#lyricSyncValue').value, '提前 0.2 秒');
+  assert.equal(engine.reader.activeS, 1);
+  assert.equal(h.media.currentTime, 9.9);
+
+  for (let i = 0; i < 3; i++) h.find('#lyricSyncLater').click();
+  assert.equal(h.find('#lyricSyncValue').value, '延后 0.4 秒');
+  assert.equal(JSON.parse(h.w.localStorage.getItem('linguatrack.track.lesson')).lyricOffsetMs, 400);
+  h.find('#lyricSyncLater').dispatchEvent(new h.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(h.find('#lyricSyncPanel').hidden, true);
+  h.media.currentTime = 4.2;
+  h.frame();
+  assert.equal(engine.reader.activeW, 0);
+  h.api.setTrackCfg('card', 0);
+  h.word().click();
+  h.frame();
+  assert.equal(h.media.currentTime, 4.4);
+  assert.equal(engine.reader.activeW, 1);
+
+  h.find('#studyLoop').click();
+  assert.equal(h.media.currentTime, .4);
+  h.media.currentTime = 10.18;
+  h.frame();
+  assert.equal(h.media.currentTime, 10.18);
+  h.media.currentTime = 10.45;
+  h.frame();
+  assert.equal(h.media.currentTime, .4);
+  h.find('#resumeCheckpoint').click();
+  assert.equal(h.media.currentTime, 12.25);
+
+  h.find('#btnLyricSync').click();
+  h.find('#lyricSyncReset').click();
+  assert.equal(h.find('#lyricSyncValue').value, '0.0 秒');
+  assert.equal(JSON.parse(h.w.localStorage.getItem('linguatrack.track.lesson')).lyricOffsetMs, undefined);
+  assert.equal((await h.api.get('data', 'lesson')).sentences[1].start, 10);
+  assert.deepEqual(h.calls, []);
+});
+
+test('range practice picks lyric lines without seeking and loops through both choices with lyric sync', async t => {
+  const h = await harness(t);
+  const engine = h.w.LT.engine;
+  const trigger = h.find('#studyRange'), start = h.find('#rangeStart');
+  const first = h.find('#viewport .s[data-i="0"]'), last = h.find('#viewport .s[data-i="1"]');
+  h.api.setTrackCfg('lyricOffsetMs', 200);
+  await h.media.play();
+  h.calls.length = 0;
+  h.media.currentTime = 16;
+  trigger.click();
+  assert.equal(start.disabled, true);
+  assert.equal(engine.follow, false);
+  last.querySelector('.w').click();
+  assert.equal(h.api.isCardOpen(), false);
+  first.dispatchEvent(new h.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  assert.equal(h.find('#rangeFirst span').textContent, 'Hello world.');
+  assert.equal(h.find('#rangeLast span').textContent, 'Welcome.');
+  assert.equal(first.dataset.rangeEdge, '起句');
+  assert.equal(last.dataset.rangeEdge, '止句');
+  assert.equal(engine.follow, false);
+  assert.equal(h.media.currentTime, 16);
+  assert.equal(start.disabled, false);
+  start.click();
+  assert.equal(h.find('#rangePicker').hidden, true);
+  assert.equal(engine.follow, true);
+  assert.equal(h.media.currentTime, .2);
+  assert.equal(trigger.textContent, '结束区间');
+  h.media.currentTime = 12;
+  h.frame();
+  assert.equal(h.media.currentTime, 12);
+  assert.equal(engine.reader.activeS, 1);
+  h.api.setTrackCfg('lyricOffsetMs', 400);
+  h.media.currentTime = 29.999;
+  h.frame();
+  assert.equal(h.media.currentTime, .4);
+  trigger.click();
+  assert.equal(trigger.textContent, '练一段');
+  assert.equal(engine.repeat, 0);
+  assert.equal(h.doc.querySelectorAll('[data-practice-range]').length, 0);
+  assert.deepEqual(h.calls, []);
+});
+
+for (const kind of ['audio', 'video']) test(kind + ': presets and fine speed changes keep playing and save the exact rate', async (t) => {
+  const h = await harness(t, kind, { rate: 0.68 });
+  const trigger = h.find('#btnSpeed');
+  const savedRate = () => JSON.parse(h.w.localStorage.getItem('linguatrack.settings.v1')).rate;
+  assert.equal(trigger.parentElement.classList.contains('p-seek'), kind === 'audio');
+  assert.equal(h.media.playbackRate, 0.68);
+  assert.equal(h.media.defaultPlaybackRate, 0.68);
+  assert.equal(h.media.preservesPitch, true);
+  assert.equal(h.find('#speedText').textContent, '0.68×');
+
+  await h.media.play();
+  h.calls.length = 0;
+  h.media.currentTime = 6;
+  trigger.focus();
+  trigger.click();
+  h.frame();
+  const slider = h.find('#speedSlider');
+  assert.equal(slider.value, '0.68');
+  assert.equal(slider.step, '0.01');
+  assert.equal(h.doc.querySelector('.speed-presets [aria-pressed=true]'), null);
+
+  const preset = h.find('.speed-presets [data-value="0.75"]');
+  preset.click();
+  assert.equal(h.media.playbackRate, 0.75);
+  assert.equal(savedRate(), 0.75);
+  assert.equal(preset.getAttribute('aria-pressed'), 'true');
+  assert.equal(slider.value, '0.75');
+
+  slider.value = '0.61';
+  slider.dispatchEvent(new h.w.Event('input'));
+  assert.equal(h.media.playbackRate, 0.61);
+  assert.equal(savedRate(), 0.75, 'dragging the slider does not repeatedly write settings');
+  assert.equal(slider.getAttribute('aria-valuetext'), '0.61 倍');
+  assert.equal(preset.getAttribute('aria-pressed'), 'false');
+  slider.dispatchEvent(new h.w.Event('change'));
+  assert.equal(savedRate(), 0.61);
+
+  slider.value = '0.59';
+  slider.dispatchEvent(new h.w.Event('input'));
+  h.close('speed', 'escape');
+  assert.equal(savedRate(), 0.59, 'closing commits an in-progress adjustment');
+  assert.equal(h.media.currentTime, 6);
+  assert.equal(h.media.paused, false);
+  assert.equal(h.doc.activeElement, trigger);
+  assert.deepEqual(h.calls, []);
+});
+
+test('ending a line loop while browsing returns to live lyrics and follows the next cue', async (t) => {
+  const h = await harness(t);
+  const scroller = h.find('#scroller');
+  const loop = h.find('#studyLoop');
+  const label = h.find('#practiceLabel');
+  const browse = () => {
+    scroller.dispatchEvent(new h.w.WheelEvent('wheel', { deltaY: 20 }));
+    scroller.scrollTop = h.w.LT.vlist.offsetOf(1);
+    scroller.dispatchEvent(new h.w.Event('scroll'));
+    h.frame();
+  };
+  h.find('#viewport .s[data-i="0"]').click();
+  loop.click();
+  await flush();
+  h.frame();
+  assert.equal(loop.textContent, '结束循环');
+  browse();
+  assert.equal(label.textContent, '浏览 · 第 2 句');
+  assert.equal(loop.textContent, '结束循环');
+  assert.equal(h.find('#btnPin').getAttribute('aria-pressed'), 'true');
+  loop.click();
+  h.frame();
+  assert.equal(h.w.LT.engine.repeat, 0);
+  assert.equal(label.textContent, '练唱 · 第 1 句');
+  assert.equal(loop.textContent, '练这句');
+  h.media.currentTime = 11;
+  h.frame();
+  h.frame();
+  assert.equal(label.textContent, '练唱 · 第 2 句');
+});
+
+test('explicit checkpoint entries seek to zero and clearing leaves learning status and history available', async t => {
+  const ordinary = await harness(t, 'audio', { checkpoint: 0 });
+  const explicit = await harness(t, 'audio', { checkpoint: 0, openAtCheckpoint: true });
+  assert.equal(ordinary.media.currentTime, 17);
+  assert.equal(explicit.media.currentTime, 0);
+  assert.equal(explicit.find('#checkpointTime').textContent, '0:00');
+  explicit.find('#clearCheckpoint').click();
+  await flush();
+  const saved = await explicit.api.get('study', 'lesson');
+  assert.equal(saved.checkpoint, null);
+  assert.equal(saved.state, 'learned');
+  assert.equal(saved.practiced, 123);
+  assert.equal(explicit.find('#seekCheckpoint').hidden, true);
+});
+
 for (const kind of ['audio', 'video']) {
   test(`${kind}: word and long-press sentence favorites work without a model and survive panel reopening`, async (t) => {
     const h = await harness(t, kind);
@@ -188,10 +397,26 @@ for (const kind of ['audio', 'video']) {
     assert.equal((await h.api.listFavorites()).length, 1);
   });
 
-  test(`${kind}: learning panels pause and every dismissal resumes at the same time and speed`, async (t) => {
+  test(`${kind}: word cards leave playback, position, and speed alone`, async (t) => {
+    const h = await harness(t, kind);
+    for (const method of ['button', 'scrim', 'escape']) {
+      h.media.currentTime = 6; h.media.playbackRate = 1.5;
+      await h.media.play(); h.frame(); h.calls.length = 0;
+      await h.open('word');
+      assert.equal(h.media.paused, false);
+      assert.equal(h.media.currentTime, 6);
+      h.close('word', method);
+      assert.equal(h.media.paused, false);
+      assert.equal(h.media.currentTime, 6);
+      assert.equal(h.media.playbackRate, 1.5);
+      assert.deepEqual(h.calls, []);
+    }
+  });
+
+  test(`${kind}: sentence panels pause and every dismissal resumes at the same time and speed`, async (t) => {
     const h = await harness(t, kind);
     for (const [panel, methods] of [
-      ['word', ['button', 'scrim', 'escape']], ['explain', ['button', 'scrim', 'escape', 'drag']],
+      ['explain', ['button', 'scrim', 'escape', 'drag']],
       ['chat', ['button', 'scrim', 'escape', 'drag', 'toggle']],
     ]) {
       for (const method of methods) {
@@ -199,11 +424,10 @@ for (const kind of ['audio', 'video']) {
         await h.media.play(); h.frame(); h.calls.length = 0;
         await h.open(panel);
         assert.equal(h.media.paused, true, `${panel} opens paused`);
-        const at = panel === 'word' ? 4 : 6;
-        assert.equal(h.media.currentTime, at, 'word cards retain click-to-seek');
+        assert.equal(h.media.currentTime, 6);
         h.close(panel, method);
         assert.equal(h.media.paused, false, `${panel} resumes on ${method}`);
-        assert.equal(h.media.currentTime, at);
+        assert.equal(h.media.currentTime, 6);
         assert.equal(h.media.playbackRate, 1.5);
         assert.deepEqual(h.calls, [['pause', kind], ['play', kind]]);
         assert.equal(h.find('#btnPlay').getAttribute('aria-label'), '暂停');
@@ -221,16 +445,82 @@ for (const kind of ['audio', 'video']) {
   });
 }
 
-test('overlapping word cards and repeated sentence details resume only after the last one closes', async (t) => {
+test('only the sentence panel controls playback while a word card is also open', async (t) => {
   const h = await harness(t);
   for (const first of ['explain', 'word']) {
       await h.media.play();
       await h.open('explain'); await h.open('explain'); await h.open('word');
       h.close(first);
-      assert.equal(h.media.paused, true);
+      assert.equal(h.media.paused, first === 'word');
       h.close(first === 'explain' ? 'word' : 'explain');
       assert.equal(h.media.paused, false);
   }
+});
+
+const wordResponse = data => Response.json({ choices: [{ message: { content: JSON.stringify(data) } }] });
+
+test('the first word lookup is stored and reopening can read it without a configured model', async (t) => {
+  const h = await harness(t);
+  Object.assign(h.api.config, { baseUrl: 'https://model.example/v1', model: 'test' });
+  let calls = 0;
+  h.w.fetch = async () => { calls++; return wordResponse({ gloss: '世界', note: '这里指世界。' }); };
+  await h.open('word');
+  assert.equal(h.find('.wc-gloss').textContent, '世界');
+  const row = h.w.LT.track.sentences[0];
+  const [key] = h.api.wordMeaningKeys('lesson', 'zh-CN', 0, 1, row);
+  assert.equal((await h.api.get('word', key)).gloss, '世界');
+  const split = { ...row, words: [{ text: 'Hel' }, { text: 'lo' }, ...row.words.slice(1)] };
+  assert.equal(h.api.wordMeaningKeys('lesson', 'zh-CN', 0, 2, split)[0], key);
+  h.close('word');
+  h.api.config.baseUrl = '';
+  await h.open('word');
+  assert.equal(h.find('.wc-gloss').textContent, '世界');
+  assert.equal(calls, 1);
+});
+
+test('word refresh preserves a saved definition until a valid replacement is committed', async (t) => {
+  const h = await harness(t);
+  Object.assign(h.api.config, { baseUrl: 'https://model.example/v1', model: 'test' });
+  const [key, legacy] = h.api.wordMeaningKeys('lesson', 'zh-CN', 0, 1, h.w.LT.track.sentences[0]);
+  await h.api.put('word', legacy, { gloss: '旧释义', note: '旧说明' });
+  let calls = 0, respond;
+  h.w.fetch = () => { calls++; return new Promise(resolve => { respond = resolve; }); };
+  await h.open('word');
+  assert.equal(h.find('.wc-gloss').textContent, '旧释义');
+  assert.equal((await h.api.get('word', key)).gloss, '旧释义');
+  assert.equal(calls, 0);
+
+  const refresh = h.find('[aria-label="重新获取释义"]');
+  refresh.click(); refresh.click(); await flush();
+  assert.equal(calls, 1);
+  assert.equal(refresh.disabled, true);
+  assert.equal(h.find('.wc-gloss').textContent, '旧释义');
+  respond(wordResponse({})); await flush();
+  assert.match(h.find('.wc-lookup-status').textContent, /已保留本地释义/);
+  assert.equal((await h.api.get('word', key)).gloss, '旧释义');
+
+  refresh.click(); await flush();
+  respond(wordResponse({ gloss: '新释义', note: '新说明' })); await flush();
+  assert.equal(h.find('.wc-gloss').textContent, '新释义');
+  assert.equal((await h.api.get('word', key)).gloss, '新释义');
+  h.close('word'); await h.open('word');
+  assert.equal(h.find('.wc-gloss').textContent, '新释义');
+  assert.equal(calls, 2);
+});
+
+test('closing and immediately reopening the same lookup ignores the canceled response', async (t) => {
+  const h = await harness(t);
+  Object.assign(h.api.config, { baseUrl: 'https://model.example/v1', model: 'test' });
+  const requests = [];
+  h.w.fetch = (_url, { signal }) => new Promise(resolve => requests.push({ signal, resolve }));
+  await h.open('word'); h.close('word'); await h.open('word');
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].signal.aborted, true);
+  requests[1].resolve(wordResponse({ gloss: '有效释义' })); await flush();
+  requests[0].resolve(wordResponse({ gloss: '旧请求' })); await flush();
+  assert.equal(h.find('.wc-gloss').textContent, '有效释义');
+  const [key] = h.api.wordMeaningKeys('lesson', 'zh-CN', 0, 1, h.w.LT.track.sentences[0]);
+  assert.equal((await h.api.get('word', key)).gloss, '有效释义');
 });
 
 test('sentence details show the cached translation with playback translations hidden and keep the selected cue', async (t) => {
@@ -310,17 +600,17 @@ test('opening subtitle management clears pending resume before dismissing learni
 
 test('leaving the playback page discards pending automatic resume', async (t) => {
   const h = await harness(t);
-  await h.media.play(); await h.open('word');
+  await h.media.play(); await h.open('explain');
   h.w.dispatchEvent(new h.w.Event('pagehide'));
-  h.close('word');
+  h.close('explain');
   assert.equal(h.media.paused, true);
 });
 
 test('closing a panel cannot resume a replacement media source', async (t) => {
   const h = await harness(t);
-  await h.media.play(); await h.open('word');
+  await h.media.play(); await h.open('explain');
   h.media.src = 'blob:replacement';
-  h.close('word');
+  h.close('explain');
   assert.equal(h.media.paused, true);
 });
 

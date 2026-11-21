@@ -197,10 +197,48 @@ test('video preferences are bounded, isolated per track and survive subtitle cha
   assert.equal(readTrackCfg('video-one').video.position, 0);
 });
 
+test('lyric offsets inherit zero for older songs and survive unrelated settings writes', () => {
+  const key = 'linguatrack.track.song';
+  saved.set(key, JSON.stringify({ read: 0 }));
+  initTrackCfg('song', 'ja');
+  assert.equal(trackCfg.lyricOffsetMs, 0);
+  setTrackCfg('lyricOffsetMs', -400);
+  setTrackFontSize('textSize', 29);
+  initTrackCfg('other', 'ja');
+  assert.equal(trackCfg.lyricOffsetMs, 0);
+  initTrackCfg('song', 'ja');
+  assert.equal(trackCfg.lyricOffsetMs, -400);
+  assert.equal(trackCfg.read, 0);
+  setTrackCfg('lyricOffsetMs', 250);
+  assert.equal(trackCfg.lyricOffsetMs, -400);
+  saved.set(key, JSON.stringify({ ...JSON.parse(saved.get(key)), lyricOffsetMs: 600 }));
+  setTrackCfg('roman', 0);
+  assert.equal(readTrackCfg('song').lyricOffsetMs, 600);
+});
+
+test('pitch is saved per song and old or invalid settings use the original key', () => {
+  const key = 'linguatrack.track.transposed';
+  saved.set(key, JSON.stringify({ read: 0 }));
+  initTrackCfg('transposed', 'ja');
+  assert.equal(trackCfg.pitchSemitones, 0);
+  setTrackCfg('pitchSemitones', -4);
+  setTrackFontSize('textSize', 29);
+  initTrackCfg('second-song', 'ja');
+  assert.equal(trackCfg.pitchSemitones, 0);
+  initTrackCfg('transposed', 'ja');
+  assert.equal(trackCfg.pitchSemitones, -4);
+  assert.equal(trackCfg.read, 0);
+  setTrackCfg('pitchSemitones', -7);
+  setTrackCfg('pitchSemitones', 2.5);
+  assert.equal(trackCfg.pitchSemitones, -4);
+  setTrackCfg('pitchSemitones', 0);
+  assert.equal(JSON.parse(saved.get(key)).pitchSemitones, undefined);
+});
+
 test('default fonts are applied as independent pixel sizes', () => {
-  assert.deepEqual(fonts(), { textSize: 25, readSize: 12, romanSize: 11.5, trSize: 16.5 });
+  assert.deepEqual(fonts(), { textSize: 25, readSize: 14, romanSize: 13.5, trSize: 16.5 });
   assert.deepEqual(Object.fromEntries(styles), {
-    '--fs-text': '25px', '--fs-read': '12px', '--fs-roman': '11.5px', '--fs-tr': '16.5px',
+    '--fs-text': '25px', '--fs-read': '14px', '--fs-roman': '13.5px', '--fs-tr': '16.5px',
   });
 });
 
@@ -256,7 +294,7 @@ test('font input is bounded and invalid values preserve the current value', () =
   assert.equal(settings.readSize, 8);
   saved.set(KEY, JSON.stringify({ readSize: null, romanSize: {}, textSize: 0, trSize: 500 }));
   initSettings();
-  assert.deepEqual(fonts(), { textSize: 8, readSize: 12, romanSize: 11.5, trSize: 64 });
+  assert.deepEqual(fonts(), { textSize: 8, readSize: 14, romanSize: 13.5, trSize: 64 });
 });
 
 test('corrupt or unavailable storage still allows changing fonts', (t) => {

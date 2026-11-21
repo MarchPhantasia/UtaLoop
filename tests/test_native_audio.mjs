@@ -223,11 +223,18 @@ test('native audio owns lock-screen control registration and supplies its sessio
   const session = h.w.NativeAudioTest.setupMediaSession({ audio: h.audio, engine: {} });
   session.setTrack({ title: 'Updated title' }); await flush();
   assert.ok(h.calls.some(([name, value]) => name === 'command' && value.action === 'metadata' && value.title === 'Updated title'));
+  const engine = new h.w.NativeAudioTest.Engine({ audio: h.audio });
+  engine.track = { sentences: [{ text: 'Lesson' }], sStart: [10] };
+  engine.kick = () => {};
+  engine.setLyricOffset(.2);
   let payload;
   const pip = h.w.NativeAudioTest.setupNativeCaptionPip({ bridge: {
     open: async (value) => { payload = value; }, update: async () => {}, close: async () => {},
-  }, media: h.audio, engine: { track: { sentences: [], sStart: [] } } });
-  await pip.open(); assert.equal(payload.nativeAudioSession, h.audio.src); await pip.close();
+  }, media: h.audio, engine });
+  await pip.open();
+  assert.equal(payload.nativeAudioSession, h.audio.src);
+  assert.equal(payload.sentences[0].start, 10.2);
+  await pip.close();
 });
 
 test('loop settings are forwarded to native audio so background repetition does not need rAF', async (t) => {
@@ -236,6 +243,10 @@ test('loop settings are forwarded to native audio so background repetition does 
   engine.kick = () => {}; engine.track = { S: 2, sStart: [0, 10], sEnd: [10, 20] };
   engine.setRepeat(1); await flush();
   assert.ok(h.calls.some(([name, value]) => name === 'command' && value.action === 'loop' && value.start === 10 && value.end === 20));
+  engine.setLyricOffset(-.2); await flush();
+  assert.equal(h.calls.at(-1)[1].start, 9.8); assert.equal(h.calls.at(-1)[1].end, 19.8);
+  engine.setRepeat(1, 0, 1); await flush();
+  assert.equal(h.calls.at(-1)[1].start, 0); assert.equal(h.calls.at(-1)[1].end, 19.8);
   engine.setRepeat(2); await flush(); assert.equal(h.calls.at(-1)[1].all, true);
   engine.setRepeat(0); await flush(); assert.equal(h.calls.at(-1)[1].all, false); assert.equal(h.calls.at(-1)[1].start, null);
 });

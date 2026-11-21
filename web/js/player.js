@@ -116,7 +116,10 @@ export function setupPlayer(ctx) {
   audio.addEventListener('seeked', () => engine.kick());
   audio.addEventListener('ended', () => {
     if (engine.repeat === 2) { engine.seek(0); media.play(); }
-    else engine.kick();
+    else {
+      engine.kick();
+      ctx.onEnded?.();
+    }
   });
   audio.addEventListener('error', () => {
     if (!audio.src) return;                 // 还没挂上音频, 不是错误
@@ -133,6 +136,7 @@ export function setupPlayer(ctx) {
   setupKeys(ctx, toggle);
   return {
     toggle,
+    play: media.play,
     overlays,
     /**
      * 换到某条音频: 记住它的库 id 以便落库, 并按存档的位置续播.
@@ -158,7 +162,7 @@ export function setupPlayer(ctx) {
 }
 
 /** 系统控制与页面按钮共用同一个 audio, 状态通过媒体事件同步。 */
-export function setupMediaSession({ audio, engine }) {
+export function setupMediaSession({ audio, engine, beforePlay }) {
   // The native player owns lock-screen commands and Now Playing while WKWebView is suspended.
   const ms = audio.nativeAudio ? null : navigator.mediaSession;
   let playRequest = 0;
@@ -189,6 +193,7 @@ export function setupMediaSession({ audio, engine }) {
     const request = ++playRequest;
     const source = audio.src;
     try {
+      beforePlay?.();
       // 直接调用, 保留页面或系统动作的用户激活。
       const pending = audio.play();
       sync();

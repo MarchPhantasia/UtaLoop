@@ -18,7 +18,7 @@ const output = path.resolve('.cache/frontend-review');
       const errors = [];
       page.setDefaultTimeout(8000);
       page.on('pageerror', (error) => errors.push(error.message));
-      let backend = 'ok', model = 'empty';
+      let backend = 'ok', model = 'empty', catalog = 'empty';
       await page.route('**/api/health*', async (route) => {
         if (backend === 'html') return route.fulfill({ status: 200, body: '<html>internal gateway 私密错误</html>' });
         if (backend === 'unauthorized') return route.fulfill({ status: 401, body: 'private token 私密错误' });
@@ -27,6 +27,12 @@ const output = path.resolve('.cache/frontend-review');
       await page.route('**/chat/completions', (route) => model === 'unauthorized'
         ? route.fulfill({ status: 401, body: '<html>private key 私密错误</html>' })
         : route.fulfill({ json: { choices: [{ message: { content: model === 'empty' ? '' : '{"ok":true}' } }] } }));
+      await page.route('**/v1/models', (route) => {
+        if (catalog === 'unauthorized') return route.fulfill({ status: 401, body: 'private key 私密错误' });
+        if (catalog === 'unsupported') return route.fulfill({ status: 404, body: 'Unavailable' });
+        return route.fulfill({ json: { data: catalog === 'empty' ? []
+          : Array.from({ length: 160 }, (_, i) => ({ id: 'study-' + i, name: 'Study ' + i })) } });
+      });
       await page.goto(base + '/index.html#set');
       const settle = async () => page.waitForFunction(() => {
         const sheet = document.querySelector('.sheet');
@@ -126,23 +132,48 @@ const output = path.resolve('.cache/frontend-review');
       backend = 'ok'; await close();
 
       await page.evaluate(async () => (await import('/js/config.js')).setConfig({ baseUrl: location.origin, model: 'test' }));
-      await open('大模型');
-      for (const [state, expected] of [['empty', '未返回内容'], ['unauthorized', '身份验证失败'], ['ok', '连接成功']]) {
-        model = state;
-        await page.getByRole('button', { name: '测试连接', exact: true }).click();
+      await open('AI 助学');
+      const modelList = page.getByRole('button', { name: '模型列表', exact: true });
+      for (const [state, expected] of [['empty', '未返回模型'], ['unauthorized', '身份验证失败'], ['unsupported', '手动填写模型 ID']]) {
+        catalog = state;
+        await modelList.click();
         await page.getByRole('status').filter({ hasText: expected }).waitFor();
         assert.doesNotMatch(await page.locator('.sheet-body').innerText(), /private|私密|html/);
       }
+      catalog = 'ok';
+      const keyField = page.getByLabel('API Key', { exact: true });
+      await keyField.fill('catalog-key');
+      const modelRequest = page.waitForRequest('**/v1/models');
+      await modelList.click();
+      assert.equal((await modelRequest).headers().authorization, 'Bearer catalog-key');
+      await page.getByRole('heading', { name: '选择模型', exact: true }).waitFor();
+      await page.getByLabel('搜索模型').fill('study-159');
+      await page.getByRole('button', { name: /Study 159/ }).click();
+      assert.equal(await page.getByLabel('模型 ID').inputValue(), 'study-159');
+      assert.equal(await keyField.inputValue(), 'catalog-key');
       await page.getByRole('button', { name: '显示API Key', exact: true }).click();
-      assert.equal(await page.getByLabel('API Key', { exact: true }).getAttribute('type'), 'text');
+      assert.equal(await keyField.getAttribute('type'), 'text');
       await page.getByRole('button', { name: '隐藏API Key', exact: true }).click();
-      await close();
+      await page.getByRole('group', { name: '思考程度' }).getByRole('button', { name: '高', exact: true }).click();
+      const saveProvider = page.getByRole('button', { name: '保存并使用', exact: true });
+      await page.getByLabel('服务商名称').fill('Primary');
+      await saveProvider.click();
 
-      await open('调用参数');
-      const before = await page.getByRole('spinbutton', { name: '上文句数', exact: true }).inputValue();
-      await page.getByRole('spinbutton', { name: '上文句数', exact: true }).fill('');
-      await page.keyboard.press('Tab');
-      assert.equal(await page.getByRole('spinbutton', { name: '上文句数', exact: true }).inputValue(), before);
+      await page.getByRole('button', { name: '新增', exact: true }).click();
+      assert.equal(await keyField.inputValue(), '');
+      await page.getByLabel('服务商名称').fill('Alternate');
+      await page.getByLabel('接口地址').fill(base + '/alternate/v1');
+      await keyField.fill('alternate-key');
+      await page.getByLabel('模型 ID').fill('manual-model');
+      await saveProvider.click();
+      await page.getByRole('button', { name: /^切换服务商/ }).click();
+      await page.getByRole('menuitem', { name: 'Primary', exact: true }).click();
+      assert.equal(await page.getByLabel('模型 ID').inputValue(), 'study-159');
+      await close();
+      await page.reload();
+      await open('AI 助学');
+      assert.equal(await keyField.inputValue(), 'catalog-key');
+      assert.equal(await page.getByRole('button', { name: '高', exact: true }).getAttribute('aria-pressed'), 'true');
       await close();
 
       for (const [width, height] of [[320, 640], [390, 844], [844, 390], [1280, 800]]) {
@@ -153,9 +184,9 @@ const output = path.resolve('.cache/frontend-review');
           await page.getByRole('button', { name: '设置', exact: true }).click();
           await checkLayout('settings');
           if (width === 390) await page.screenshot({ path: path.join(output, `${engine.name()}-${theme}-settings.png`), animations: 'disabled' });
-          for (const name of ['分析后端', '大模型', '调用参数', '译文语言', '字幕字号', '视频设置', '导出数据', '导入数据', '存储明细']) {
+          for (const name of ['分析后端', 'AI 助学', '译文语言', '字幕字号', '视频设置', '导出数据', '导入数据', '存储明细']) {
             await open(name); await checkLayout(name);
-            if (width === 390 && ['大模型', '调用参数', '字幕字号', '视频设置', '导出数据'].includes(name)) {
+            if (width === 390 && ['AI 助学', '字幕字号', '视频设置', '导出数据'].includes(name)) {
               await page.screenshot({ path: path.join(output, `${engine.name()}-${theme}-${name}.png`), animations: 'disabled' });
             }
             await close();
@@ -163,10 +194,6 @@ const output = path.resolve('.cache/frontend-review');
           await open('语言默认值'); await checkLayout('languages');
           await page.locator('.sheet-body .row-nav').filter({ hasText: /^日语/ }).click(); await settle();
           await checkLayout('language defaults');
-          await page.locator('.sheet-head [aria-label="关闭"]').click(); await settle(); await close();
-          await open('提示词');
-          await page.locator('.sheet-body').getByRole('button', { name: /^翻译 · 系统提示词/ }).click(); await settle();
-          await checkLayout('prompt editor');
           await page.locator('.sheet-head [aria-label="关闭"]').click(); await settle(); await close();
           console.log(`${engine.name()} ${width}×${height} ${theme}: settings panels passed`);
         }
@@ -269,12 +296,13 @@ const output = path.resolve('.cache/frontend-review');
       }
       await page.keyboard.press('Escape');
       assert.equal(await page.locator('.wcard').evaluate((node) => node.inert), true);
+      await page.locator('#btnDisplay').click();
       await page.locator('#btnExplain').click();
       await page.getByText(/讲解失败：.*API Key/).waitFor();
       assert.doesNotMatch(await page.locator('.sheet-body').innerText(), /private|私密|html/);
       await close();
       assert.deepEqual(errors, []);
-      console.log(`PASS ${engine.name()}: keyboard, connection failures, empty responses, secret fields, numeric edits, durable imports, storage rollback, word cards and explanations`);
+      console.log(`PASS ${engine.name()}: keyboard, model discovery, persisted provider switching, durable imports, storage rollback, word cards and explanations`);
       await context.close();
     } finally { await browser.close(); }
   }

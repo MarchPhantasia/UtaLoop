@@ -167,7 +167,7 @@ export async function openChat({ track, i, lang, onClose }) {
     if (!llmReady()) {
       wait.remove();
       const row = botBubble(() => {}, () => {});
-      mdInto(row.body, '请在「设置 → 大模型」配置接口地址和模型名');
+      mdInto(row.body, '请在「设置 → AI 助学」配置接口地址和模型名称');
       log.append(row);
       state.busy = false;
       send.disabled = false;

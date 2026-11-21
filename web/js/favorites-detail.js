@@ -81,7 +81,7 @@ export function openFavoriteDetail(f, { onSave = () => {} } = {}) {
   const soundStatus = el('p', 'fav-audio-status'); soundStatus.setAttribute('role', 'status');
   const sourceTrack = { lang: f.lang, duration: 0 }, audioRange = { start: NaN, end: NaN };
   const choices = new Map();
-  const preferences = readTrackCfg(f.track, f.lang).pronunciation;
+  const { pronunciation: preferences, lyricOffsetMs } = readTrackCfg(f.track, f.lang);
   const session = createPronunciation({ track: sourceTrack, word: { text: f.text }, audioRange,
     getAudioBlob: () => blob, onState: ({ state, source, message }) => {
       for (const [key, control] of choices) {
@@ -177,8 +177,9 @@ export function openFavoriteDetail(f, { onSave = () => {} } = {}) {
       }
       const { track, location } = content;
       sourceTrack.duration = track?.duration || record?.duration || 0;
-      const wordRange = location?.w ? wordAudioRange(location.s, location.w, sourceTrack.duration) : null;
-      const range = wordRange || clipAudioRange(location?.s || (!track ? f : null), sourceTrack.duration);
+      const offset = lyricOffsetMs / 1000;
+      const wordRange = location?.w ? wordAudioRange(location.s, location.w, sourceTrack.duration, offset) : null;
+      const range = wordRange || clipAudioRange(location?.s || (!track ? f : null), sourceTrack.duration, offset);
       if (!record || record.audio?.missing) audioMessage = '原文音频不可用，请补充源媒体文件';
       else if (!range) audioMessage = '原文已变化，暂时无法定位音频片段';
       else {

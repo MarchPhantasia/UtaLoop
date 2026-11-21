@@ -1,30 +1,28 @@
 /**
- * 单词释义卡片 —— 点词后实时调大模型, 结合上下文给出详细含义.
+ * 单词释义卡片 —— 优先读取本机释义, 初次查看或主动刷新时请求大模型.
  *
  * 两段式渲染: 分词器已经算好的东西 (注音/转写/词性/原形/活用/构成) 立刻显示,
  * 不等网络; 大模型那部分 (语境释义 + 说明 + 相关形式) 后到, 占位骨架先撑住高度,
  * 免得卡片弹出后再跳一次。
  *
- * 缓存键带 trackId + 译文语言 + 句序 + 词序 + 原文散列: 同一个词在不同句子里
- * 讲法不同, 所以按位置缓存; 换音频天然隔离。
+ * 释义按曲目、语言和词在原句中的位置保存, 与原句语境对应。
  */
 
 import { config, fill, langVars, llmReady } from './config.js';
-import { chatJSON, once } from './llm.js';
+import { chatJSON } from './llm.js';
 import { errorMessage } from './errors.js';
-import { get as cacheGet, put as cachePut } from './store.js';
+import { isDegraded, mutateRecord } from './store.js';
 import { el, copyText, icon, toast } from './util.js';
 import { trackCfg, setTrackPronunciation } from './trackcfg.js';
 import { createPronunciation } from './pronunciation.js';
 import { favoriteButton } from './favorite-button.js';
 import { favoriteDraft, enrichFavorite } from './favorites.js';
-import { favoriteWordKey } from './favorite-learning.js';
+import { cachedWordMeaning, hasWordMeaning, wordMeaningKeys } from './favorite-learning.js';
 
 let host = null;
 let scrim = null;
 let ctl = null;
 let returnFocus = null;
-let closeCb = null;
 let pronunciation = null;
 // 同 sheet.js: `.is-open` 下一帧才加, 状态另用变量记
 let openFlag = false;
@@ -72,9 +70,6 @@ export function closeWordCard() {
   host.setAttribute('aria-hidden', 'true');
   host.classList.remove('is-open');
   scrim.classList.remove('is-open');
-  const onClose = closeCb;
-  closeCb = null;
-  onClose?.();
 }
 
 /** 骨架屏: 三条灰块, 纯装饰. */
@@ -84,7 +79,7 @@ function skeleton() {
   return box;
 }
 
-function askLLM(track, s, w, i, j, lang, signal) {
+function askLLM(track, s, w, i, lang, signal) {
   const vars = langVars(lang, track.lang);
   const before = track.sentences.slice(Math.max(0, i - config.ctxBefore), i)
     .map((x) => x.text).filter(Boolean);
@@ -113,15 +108,14 @@ function askLLM(track, s, w, i, j, lang, signal) {
 
 /**
  * 打开卡片.
- * @param {object} o `{track, i, j, lang, onClose, getAudioBlob}`; i 句序, j 词序
+ * @param {object} o `{track, i, j, lang, lyricOffset, getAudioBlob}`; i 句序, j 词序
  */
-export async function openWordCard({ track, i, j, lang, onClose, getAudioBlob }) {
+export async function openWordCard({ track, i, j, lang, lyricOffset, getAudioBlob }) {
   const s = track.sentences[i];
   const w = s && s.words[j];
   if (!w) return;
   ensureHost();
   pronunciation?.dispose();
-  closeCb = onClose || null;
   if (!host.contains(document.activeElement)) returnFocus = document.activeElement;
   if (ctl) ctl.abort();
   ctl = new AbortController();
@@ -134,7 +128,8 @@ export async function openWordCard({ track, i, j, lang, onClose, getAudioBlob })
   word.id = 'wordCardTitle';
   top.append(word);
   const readingLine = el('div', 'wc-reading-line');
-  const reading = el('span', 'wc-read', w.read && w.read !== w.text ? w.read : '');
+  const localReading = w.read && w.read !== w.text ? w.read : '';
+  const reading = el('span', 'wc-read', localReading);
   reading.hidden = !reading.textContent;
   readingLine.append(reading);
   top.append(readingLine);
@@ -148,7 +143,7 @@ export async function openWordCard({ track, i, j, lang, onClose, getAudioBlob })
   soundStatus.setAttribute('role', 'status');
   soundStatus.hidden = true;
   const choices = new Map();
-  const session = createPronunciation({ track, sentence: s, word: w, getAudioBlob,
+  const session = createPronunciation({ track, sentence: s, word: w, lyricOffset, getAudioBlob,
     onState: ({ state, source, message }) => {
       for (const [key, button] of choices) {
         button.setAttribute('aria-pressed', String(trackCfg.pronunciation.source === key));
@@ -182,7 +177,10 @@ export async function openWordCard({ track, i, j, lang, onClose, getAudioBlob })
   const gloss = el('h3', 'wc-gloss');
   const note = el('div', 'wc-note');
   const forms = el('div', 'wc-forms');
-  host.append(gloss, note, forms);
+  const status = el('p', 'wc-lookup-status');
+  status.setAttribute('role', 'status');
+  status.hidden = true;
+  host.append(gloss, note, forms, status);
 
   const bits = [];
   if (w.lemma && w.lemma !== w.text) bits.push('原形 ' + w.lemma);
@@ -193,17 +191,18 @@ export async function openWordCard({ track, i, j, lang, onClose, getAudioBlob })
 
   // 词性小标签落在左下角 (照 img/卡片.PNG), 和操作按钮同一行
   const acts = el('div', 'wc-acts');
-  const pos = el('span', 'wc-pos p-' + (w.pos || 'other'), track.posLabel(w.pos));
+  const localPos = track.posLabel(w.pos) || '';
+  const pos = el('span', 'wc-pos p-' + (w.pos || 'other'), localPos);
   const copy = el('button', 'wc-a wc-a-ic');
   copy.type = 'button';
+  copy.disabled = true;
   copy.title = '复制';
   copy.setAttribute('aria-label', '复制');
   copy.append(icon('i-copy', 'ic ic-sm'));
-  const again = el('button', 'wc-a wc-a-ic');
+  const again = el('button', 'wc-a');
   again.type = 'button';
-  again.title = '重新生成';
-  again.setAttribute('aria-label', '重新生成');
-  again.append(icon('i-refresh', 'ic ic-sm'));
+  again.setAttribute('aria-label', '重新获取释义');
+  again.append(icon('i-refresh', 'ic ic-sm'), el('span', null, '重新获取'));
   const shut = el('button', 'wc-a wc-a-main', '关闭');
   shut.type = 'button';
   shut.addEventListener('click', closeWordCard);
@@ -224,9 +223,15 @@ export async function openWordCard({ track, i, j, lang, onClose, getAudioBlob })
     if (!host.contains(document.activeElement)) host.focus({ preventScroll: true });
   });
 
+  const showStatus = (message, error = false) => {
+    status.classList.toggle('wc-err', error);
+    status.textContent = message;
+    status.hidden = !message;
+  };
+
   const paint = (data) => {
     meaning = data;
-    void enrichFavorite(favoriteDraft({ track, i, j, lang, meaning }))
+    void Promise.resolve().then(() => enrichFavorite(favoriteDraft({ track, i, j, lang, meaning: data })))
       .catch(() => toast('收藏释义更新失败，可重新收藏以更新'));
     gloss.textContent = String(data.gloss || '').trim() || '暂无释义';
     note.textContent = '';
@@ -242,9 +247,11 @@ export async function openWordCard({ track, i, j, lang, onClose, getAudioBlob })
       if (tip) chip.append(el('i', null, tip));
       forms.append(chip);
     }
-    if (data.reading && !w.read) { reading.textContent = data.reading; reading.hidden = false; }
-    if (data.pos) pos.textContent = data.pos;
+    reading.textContent = w.read ? localReading : typeof data.reading === 'string' ? data.reading.trim() : '';
+    reading.hidden = !reading.textContent;
+    pos.textContent = typeof data.pos === 'string' && data.pos.trim() ? data.pos : localPos;
     host.classList.remove('is-load');
+    copy.disabled = false;
     copy.onclick = async () => {
       const ok = await copyText(`${w.text}${data.reading ? `（${data.reading}）` : ''}\n` +
         `${gloss.textContent}\n${body}`);
@@ -254,37 +261,60 @@ export async function openWordCard({ track, i, j, lang, onClose, getAudioBlob })
 
   const fail = (msg) => {
     host.classList.remove('is-load');
+    if (hasWordMeaning(meaning)) {
+      showStatus('已保留本地释义。' + msg, true);
+      return;
+    }
     gloss.textContent = '释义加载失败';
     note.textContent = '';
     note.append(el('p', 'wc-err', msg));
   };
 
-  const cacheKey = favoriteWordKey(track.id, lang, i, j, w.text, s.text);
+  const keys = wordMeaningKeys(track.id, lang, i, j, s);
+  const saveMeaning = (data, replace) => mutateRecord('word', keys[0], current =>
+    !replace && hasWordMeaning(current) ? current : data, { track: track.id });
+
+  function paintSaved(data) {
+    paint(data);
+    showStatus(isDegraded() ? '释义已暂存，仅本次会话可用' : '');
+  }
 
   async function load(force) {
-    host.classList.add('is-load');
-    gloss.textContent = '';
-    note.textContent = '';
-    note.append(skeleton());
-    forms.textContent = '';
-    if (!force) {
-      const hit = await cacheGet('word', cacheKey);
-      if (signal.aborted) return;
-      if (hit) { paint(hit); return; }
-    }
-    if (!llmReady()) {
-      fail('请在「设置 → 大模型」配置接口地址和模型名');
-      return;
+    if (again.disabled || signal.aborted) return;
+    again.disabled = true;
+    const showingMeaning = hasWordMeaning(meaning);
+    showStatus(showingMeaning ? '正在重新获取释义…' : '');
+    if (!showingMeaning) {
+      host.classList.add('is-load');
+      gloss.textContent = '';
+      note.replaceChildren(skeleton());
     }
     try {
-      const data = await once('w:' + cacheKey, () => askLLM(track, s, w, i, j, lang, signal));
+      if (!force) {
+        const hit = await cachedWordMeaning(keys, { strict: true });
+        if (signal.aborted) return;
+        if (hit) {
+          const saved = hit.key === keys[0] ? hit.meaning : await saveMeaning(hit.meaning, false).catch(() => hit.meaning);
+          if (!signal.aborted) paintSaved(saved);
+          return;
+        }
+      }
+      if (!llmReady()) throw new Error('请在「设置 → AI 助学」配置接口地址和模型名称');
+      const data = await askLLM(track, s, w, i, lang, signal);
       if (signal.aborted) return;
-      paint(data);
-      cachePut('word', cacheKey, data, track.id);
+      if (!hasWordMeaning(data)) throw new Error('模型没有返回有效释义，请重试');
+      const saved = await saveMeaning(data, force).catch(() => null);
+      if (signal.aborted) return;
+      if (saved) paintSaved(saved);
+      else if (showingMeaning) fail('新释义保存失败，请重试');
+      else {
+        paint(data);
+        showStatus('释义仅在本次词卡显示，本机保存失败', true);
+      }
     } catch (err) {
       if (signal.aborted || (err && err.name === 'AbortError')) return;
       fail(errorMessage(err, '释义请求失败，请重试'));
-    }
+    } finally { again.disabled = false; }
   }
 
   again.addEventListener('click', () => load(true));

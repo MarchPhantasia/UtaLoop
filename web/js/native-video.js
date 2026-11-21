@@ -55,18 +55,8 @@ export class NativeVideo extends NativeAudio {
     });
     video.addEventListener('volumechange', () => { if (!video.muted) video.muted = true; });
   }
-  get volume() { return this._volume; }
-  set volume(value) {
-    this._volume = Math.max(0, Math.min(1, Number(value) || 0)); this._setVolume();
-  }
-  get muted() { return this._muted; }
-  set muted(value) { this._muted = !!value; this._setVolume(); }
   get disablePictureInPicture() { return this.video.disablePictureInPicture; }
   set disablePictureInPicture(value) { this.video.disablePictureInPicture = value; }
-  _setVolume() {
-    if (this.readyState) void this._command('volume', { volume: this._volume, muted: this._muted }).catch((error) => this._fail(error));
-    this._emit('volumechange');
-  }
   _inVideoPip() {
     return this._activityPip || document.pictureInPictureElement === this.video || this.video.webkitPresentationMode === 'picture-in-picture';
   }

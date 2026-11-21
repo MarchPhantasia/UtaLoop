@@ -89,7 +89,7 @@ html[data-subtitle-mode="plain"] .w-text { white-space: pre; }
   row-gap: var(--gap-row);
 }
 
-.s-tr {
+.s-tr, .s-source-roman {
   margin: var(--s-gap) 0 0;
   font-size: var(--fs-tr);
   line-height: var(--lh-tr);
@@ -97,8 +97,26 @@ html[data-subtitle-mode="plain"] .w-text { white-space: pre; }
   letter-spacing: 0;
   overflow-wrap: anywhere;
 }
+.s-tr { font-family: var(--font-translation); font-weight: 400; letter-spacing: .01em; }
 .s-tr:empty { display: none; }
+.s-source-roman { font: 500 calc(var(--fs-roman) * 1.3)/1.45 var(--font-roman); }
+html[data-roman="0"] .s-source-roman { display:none; }
 html[data-tr="0"] .s-tr { display: none; }
+
+html[data-song-lyrics] {
+  --s-pad-y: 8px;
+  --s-gap: 4px;
+  --s-time-pad: 15px;
+  --chip-px: 4px;
+  --gap-col: 1px;
+  --h-bar: 0px;
+  --gap-bar: 2px;
+  --lyric-word-lift: -1px;
+  --lyric-focus-a: 44%;
+  --lh-tr: calc(var(--fs-tr) * 1.5);
+}
+.s.no-inline-reading { --read-row: 0px; }
+.s.no-inline-roman { --roman-row: 0px; }
 
 /* ---------------------------------------------------------------- 四层单词 */
 
@@ -118,10 +136,10 @@ html[data-tr="0"] .s-tr { display: none; }
   isolation: isolate;
   display: grid;
   grid-template-rows:
-    var(--lh-read)
+    var(--read-row, var(--lh-read))
     var(--lh-text)
     calc(var(--h-bar) + var(--gap-bar))
-    var(--lh-roman);
+    var(--roman-row, var(--lh-roman));
   justify-items: center;
   min-width: 0;
   max-width: 100%;
@@ -173,8 +191,8 @@ html[data-tr="0"] .s-tr { display: none; }
   position: absolute;
   left: 0;
   right: 0;
-  top: calc(var(--lh-read) - 1px);
-  bottom: calc(var(--lh-roman) - 3px);
+  top: calc(var(--read-row, var(--lh-read)) - 1px);
+  bottom: calc(var(--roman-row, var(--lh-roman)) - 3px);
   border: 2px solid var(--ring);
   border-radius: calc(var(--radius-chip) + 3px);
   opacity: 0;
@@ -220,6 +238,29 @@ html[data-tr="0"] .s-tr { display: none; }
   font-weight: 500;
   color: var(--ink-4);
   letter-spacing: 0;
+}
+html[data-song-lyrics] .w-roman { color: var(--ink-3); }
+
+/* 歌词词块共用一层底色，当前词用更浓的同色底。 */
+html[data-song-lyrics] .w-text::before { content: none; }
+html[data-song-lyrics] .w::after {
+  inset: calc(var(--read-row, var(--lh-read)) + 1px) 1px
+    calc(var(--roman-row, var(--lh-roman)) + var(--gap-bar) + 1px);
+  z-index: -1;
+  border: 0;
+  border-radius: var(--radius-chip);
+  background: var(--pc);
+  transform: none;
+  transition: opacity .16s var(--ease), transform .2s var(--ease);
+}
+html[data-song-lyrics] .s.is-active .w::after { opacity: var(--chip-a); }
+html[data-song-lyrics] .w.is-cur .w-text,
+html[data-song-lyrics] .w.is-cur::after { transform: translateY(var(--lyric-word-lift)); }
+html[data-song-lyrics] .s.is-active .w.is-cur::after { opacity: var(--lyric-focus-a); }
+html[data-song-lyrics][data-theme="dark"] { --lyric-focus-a: 31%; }
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-song-lyrics] { --lyric-word-lift: 0px; }
 }
 
 @media (hover: hover) {

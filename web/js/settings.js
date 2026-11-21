@@ -14,7 +14,11 @@ const KEY = 'linguatrack.settings.v1';
 export const FONT_SIZE_MIN = 8;
 export const FONT_SIZE_MAX = 64;
 export const FONT_SIZE_STEP = 0.5;
-export const FONT_DEFAULTS = { textSize: 25, readSize: 12, romanSize: 11.5, trSize: 16.5 };
+export const FONT_DEFAULTS = { textSize: 25, readSize: 14, romanSize: 13.5, trSize: 16.5 };
+export const PLAYBACK_RATE_MIN = 0.5;
+export const PLAYBACK_RATE_MAX = 2;
+export const PLAYBACK_RATE_STEP = 0.01;
+const OLD_FONTS = { ...FONT_DEFAULTS, readSize: 12, romanSize: 11.5 };
 const FONT_CSS = {
   textSize: '--fs-text', readSize: '--fs-read', romanSize: '--fs-roman', trSize: '--fs-tr',
 };
@@ -25,8 +29,9 @@ const LEGACY_SIZE = { s: 88, m: 100, l: 120 };
 const DEFAULTS = {
   // 旧全局字号保留为未设置语言的回退值。
   ...FONT_DEFAULTS,
-  theme: 'auto',  // auto | light | dark
+  theme: 'light',  // auto | light | dark
   rate: 1,
+  songPlayMode: 'stop',
   ttsCalibration: TTS_CALIBRATION_DEFAULT,
   track: '',      // 上次打开的曲目
 };
@@ -39,11 +44,17 @@ export function normFontSize(v, fallback) {
   return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(n / FONT_SIZE_STEP) * FONT_SIZE_STEP));
 }
 
+export function normalizePlaybackRate(value, fallback = 1) {
+  const rate = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isFinite(rate) || rate <= 0) return fallback;
+  return Math.min(PLAYBACK_RATE_MAX, Math.max(PLAYBACK_RATE_MIN, Math.round(rate * 100) / 100));
+}
+
 function legacyFonts(size) {
   const n = typeof size === 'string' && Object.hasOwn(LEGACY_SIZE, size) ? LEGACY_SIZE[size] : Number(size);
   const valid = (typeof size === 'number' || (typeof size === 'string' && size.trim())) && Number.isFinite(n);
   const scale = valid ? Math.min(160, Math.max(72, Math.round(n))) / 100 : 1;
-  return Object.fromEntries(Object.entries(FONT_DEFAULTS).map(([key, value]) => [key,
+  return Object.fromEntries(Object.entries(valid ? OLD_FONTS : FONT_DEFAULTS).map(([key, value]) => [key,
     normFontSize(value * (key === 'textSize' ? scale : 1 + (scale - 1) * .6), value),
   ]));
 }
@@ -132,7 +143,14 @@ export function initSettings(handler) {
       for (const k of Object.keys(DEFAULTS)) {
         if (saved[k] === undefined) continue;
         settings[k] = Object.hasOwn(FONT_DEFAULTS, k) ? normFontSize(saved[k], settings[k])
+          : k === 'rate' ? normalizePlaybackRate(saved[k])
           : k === 'ttsCalibration' ? normalizeTtsCalibration(saved[k]) : saved[k];
+      }
+      if (!saved.appearanceVersion) {
+        for (const key of ['readSize', 'romanSize']) {
+          if (saved[key] === OLD_FONTS[key]) settings[key] = FONT_DEFAULTS[key];
+        }
+        if (saved.theme === 'auto') settings.theme = 'light';
       }
       if (saved.fonts && typeof saved.fonts === 'object' && !Array.isArray(saved.fonts)) {
         for (const [code, sizes] of Object.entries(saved.fonts)) {
@@ -150,7 +168,7 @@ export function initSettings(handler) {
 }
 
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch { /* 隐私模式 */ }
+  try { localStorage.setItem(KEY, JSON.stringify({ ...settings, appearanceVersion: 2 })); } catch { /* 隐私模式 */ }
 }
 
 export function setGlobalVideo(fields) {
@@ -170,7 +188,7 @@ export function applyTheme() {
   const root = document.documentElement;
   root.dataset.theme = dark ? 'dark' : 'light';
   const meta = document.querySelector('meta[name=theme-color]');
-  if (meta) meta.content = dark ? '#15170f' : '#f2f2ea';
+  if (meta) meta.content = dark ? '#29323e' : '#f6f8fc';
 }
 
 export function applyAll() {
@@ -187,13 +205,23 @@ function saveLanguageFonts(code, next) {
   onChange('fonts', { code, ...next }, Object.keys(FONT_DEFAULTS).some((key) => previous[key] !== current[key]));
 }
 
+export function setLangFontSizes(code, sizes) {
+  code = languageCode(code);
+  if (!code) return;
+  const previous = settings.fonts[code] || {};
+  const patch = normalizeFonts(sizes);
+  if (Object.entries(patch).some(([key, value]) => value !== previous[key])) {
+    saveLanguageFonts(code, { ...previous, ...patch });
+  }
+}
+
 export function setLangFontSize(code, key, value) {
   code = languageCode(code);
   if (!code || !Object.hasOwn(FONT_DEFAULTS, key)) return;
   const current = fontSizes(code)[key];
   const next = normFontSize(value, current);
   if (next === current) return;
-  saveLanguageFonts(code, { ...settings.fonts[code], [key]: next });
+  setLangFontSizes(code, { [key]: next });
 }
 
 export function resetLangFontSizes(code) {
@@ -206,6 +234,7 @@ export function setSetting(key, value) {
   if (!Object.hasOwn(DEFAULTS, key)) return;
   const layout = Object.hasOwn(FONT_DEFAULTS, key);
   const next = layout ? normFontSize(value, settings[key])
+    : key === 'rate' ? normalizePlaybackRate(value, settings.rate)
     : key === 'ttsCalibration' ? normalizeTtsCalibration(value) : value;
   if (settings[key] === next) return;
   settings[key] = next;

@@ -221,15 +221,17 @@ export function openConfirm(title, text, { ok = '确定', danger = false } = {})
   });
 }
 
-/** 贴着某个按钮弹出的小菜单. items: `{label, icon, danger, onPick}` */
-export function openMenu(anchor, items) {
+/** 贴着某个按钮弹出的小菜单. items: `{label, icon, danger, checked, onPick}` */
+export function openMenu(anchor, items, { label = '更多操作', title, onClose } = {}) {
   const scrim = el('div', 'menu-scrim');
   const menu = el('div', 'menu');
   menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', '更多操作');
+  menu.setAttribute('aria-label', label);
+  if (title) menu.append(el('div', 'menu-title', title));
   const shut = () => {
     const focused = menu.contains(document.activeElement);
     scrim.remove(); menu.remove();
+    onClose?.();
     if (focused && anchor.isConnected) anchor.focus({ preventScroll: true });
   };
   scrim.addEventListener('click', shut);
@@ -237,9 +239,12 @@ export function openMenu(anchor, items) {
     if (!it) continue;
     const btn = el('button', 'menu-i' + (it.danger ? ' is-danger' : ''));
     btn.type = 'button';
-    btn.setAttribute('role', 'menuitem');
+    const radio = typeof it.checked === 'boolean';
+    btn.setAttribute('role', radio ? 'menuitemradio' : 'menuitem');
+    if (radio) btn.setAttribute('aria-checked', String(it.checked));
     if (it.icon) btn.append(icon(it.icon, 'ic ic-sm'));
     btn.append(el('span', null, it.label));
+    if (it.checked) btn.append(icon('i-check', 'ic ic-sm menu-check'));
     btn.addEventListener('click', () => { shut(); it.onPick(); });
     menu.append(btn);
   }
@@ -270,7 +275,7 @@ export function openMenu(anchor, items) {
   requestAnimationFrame(() => {
     if (!menu.isConnected) return;
     menu.classList.add('is-open');
-    menu.querySelector('button')?.focus({ preventScroll: true });
+    (menu.querySelector('[aria-checked="true"]') || menu.querySelector('button'))?.focus({ preventScroll: true });
   });
   return shut;
 }

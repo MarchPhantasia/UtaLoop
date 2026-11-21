@@ -5,16 +5,16 @@
  * 没有响应式代理, 每次状态切换只碰真正变化的那几个节点。
  *
  * 每个单词是一个「三层 chip」: 上层 `w-read` (注音)、中层 `w-text` (原文)、
- * 下层 `w-roman` (转写/原形), 加一条扫光进度条。三层对任何语言都是同一套结构,
+ * 下层 `w-roman` (转写/原形)。普通字幕另有扫光进度条。
  * 具体哪层有内容由 `track.json` 的单词字段决定 —— 没有就留空。
  *
- * **留空的层仍然占着它那一行的高度**: 四行的高度是固定长度 (见 reader.css 的 `.w`),
- * 与内容无关。所以同一视觉行里所有原文都落在同一条线上, 哪个词有注音、哪个词没有都
- * 不影响; 整层关掉才把那一行压成 0 (`html[data-read="0"]`), 而那是全局一致的。
- * 千万别改成「空了就不占高度」—— 字幕会因为个别词有注音而上下参差。
+ * 同一句使用同一套行高, 即使个别词没有注音, 原文仍然对齐。
+ * 歌词只有在整句缺少某层时才折叠该层, Metrics 使用相同规则预测高度。
  */
 
+import { fmtTime } from './util.js';
 const CACHE_MAX = 200;
+const wordClass = word => 'w p-' + (word.pos || 'other');
 
 const CHIP_TPL = (() => {
   const t = document.createElement('template');
@@ -24,25 +24,52 @@ const CHIP_TPL = (() => {
   return t.content.firstElementChild;
 })();
 
+function fillWordChip(chip, word, songLyrics) {
+  const [read, text, bar, roman] = chip.children;
+  if (word.lyricParts?.length) {
+    chip.style.gridTemplateColumns = `repeat(${word.lyricParts.length}, max-content)`;
+    bar.style.gridColumn = '1 / -1';
+    chip.replaceChildren(bar);
+    word.lyricParts.forEach((part, index) => {
+      for (const layer of ['read', 'text', 'roman']) {
+        if (!part[layer]) continue;
+        const label = document.createElement('span');
+        label.className = 'w-' + layer;
+        label.textContent = part[layer];
+        label.style.gridColumn = String(index + 1);
+        chip.append(label);
+      }
+    });
+  } else {
+    read.textContent = word.read || '';
+    text.textContent = word.text;
+    roman.textContent = word.roman || '';
+  }
+  if (songLyrics) bar.remove();
+  else chip._fill = bar.firstElementChild;
+}
+
 /** 播放阅读区与句子详情共用同一份字幕卡片结构。 */
 export function createSentenceCard(track, i, metrics) {
   const s = track.sentences[i];
   const art = document.createElement('article');
   art.className = s.wordTiming ? 's' : 's no-wt';
   art.classList.toggle('s-plain', !(s.analyzed ?? (track.raw.subtitleMode !== 'plain')));
+  const songLyrics = !!track.raw.sourceLyrics;
+  if (songLyrics) {
+    art.classList.toggle('no-inline-reading', !s.words.some(w => w.read));
+    art.classList.toggle('no-inline-roman', !s.words.some(w => w.roman));
+  }
   art.dataset.i = i;
 
   const wrap = document.createElement('div');
   wrap.className = 's-words';
+  wrap.lang = track.lang;
   const chips = s.words.map((w, j) => {
     const chip = CHIP_TPL.cloneNode(true);
-    const base = 'w p-' + (w.pos || 'other');
-    chip.className = chip._cls = base;
+    chip.className = chip._cls = wordClass(w);
     chip.dataset.j = j;
-    if (w.read) chip.children[0].textContent = w.read;
-    chip.children[1].textContent = w.text;
-    if (w.roman) chip.children[3].textContent = w.roman;
-    chip._fill = chip.children[2].firstElementChild;
+    fillWordChip(chip, w, songLyrics);
     for (const layer of metrics?.layers || []) {
       chip.style.setProperty('--fit-' + layer.key, metrics.layerScale(w, layer));
     }
@@ -51,21 +78,32 @@ export function createSentenceCard(track, i, metrics) {
   });
   const tr = document.createElement('p');
   tr.className = 's-tr';
+  if (s.translationLang) tr.lang = s.translationLang;
   tr.textContent = s.translation || '';
   art.append(wrap, tr);
+  if (s.sourceRoman && !songLyrics) {
+    const roman = document.createElement('p');
+    roman.className = 's-source-roman';
+    roman.textContent = s.sourceRoman;
+    art.insertBefore(roman, tr);
+  }
   art._chips = chips;
   return art;
 }
 
 export class Reader {
-  constructor(viewport, track, metrics) {
+  constructor(viewport, track, metrics, toMediaTime = time => time) {
     this.viewport = viewport;
     this.track = track;
     this.metrics = metrics;
+    this.toMediaTime = toMediaTime;
     this.els = new Map();    // 已挂载: 句号 -> 元素
     this.cache = new Map();  // LRU 离屏缓存, 回滚时秒级复用
     this.activeS = -1;
     this.activeW = -1;
+    this.browse = -1;
+    this.rangeFirst = this.rangeLast = -1;
+    this.pickingRange = false;
     this.curFill = null;
     this._lastP = -1;
   }
@@ -73,7 +111,53 @@ export class Reader {
   // ------------------------------------------------------------ 构建
 
   _create(i) {
-    return createSentenceCard(this.track, i);
+    const el = createSentenceCard(this.track, i);
+    el.dataset.time = this.timeLabel(i);
+    return el;
+  }
+
+  timeLabel(first, last = first) {
+    const { start } = this.track.sentences[first];
+    const { end } = this.track.sentences[last];
+    return fmtTime(this.toMediaTime(start)) + ' – ' + fmtTime(this.toMediaTime(end));
+  }
+
+  refreshTimeLabels() {
+    for (const nodes of [this.els, this.cache]) {
+      for (const [i, el] of nodes) el.dataset.time = this.timeLabel(i);
+    }
+  }
+
+  setBrowse(i) {
+    if (this.browse === i) return;
+    this.els.get(this.browse)?.classList.remove('is-browsed');
+    this.browse = i;
+    this.els.get(i)?.classList.add('is-browsed');
+  }
+
+  setPracticeRange(first, last, picking) {
+    if (this.rangeFirst === first && this.rangeLast === last && this.pickingRange === picking) return;
+    this.rangeFirst = first;
+    this.rangeLast = last;
+    this.pickingRange = picking;
+    this.viewport.toggleAttribute('data-picking-range', picking);
+    for (const [i, el] of this.els) this._paintPracticeRange(el, i);
+  }
+
+  _paintPracticeRange(el, i) {
+    const first = i === this.rangeFirst, last = i === this.rangeLast;
+    el.toggleAttribute('data-practice-range', first || last || (this.rangeFirst >= 0 && i > this.rangeFirst && i < this.rangeLast));
+    if (first || last) el.dataset.rangeEdge = first && last ? '起止句' : first ? '起句' : '止句';
+    else delete el.dataset.rangeEdge;
+    if (this.pickingRange) {
+      el.tabIndex = 0;
+      el.setAttribute('role', 'button');
+      el.setAttribute('aria-label', `第 ${i + 1} 句 · ${this.track.sentences[i].text}`);
+    } else if (el.hasAttribute('tabindex')) {
+      el.removeAttribute('tabindex');
+      el.removeAttribute('role');
+      el.removeAttribute('aria-label');
+    }
   }
 
   // ------------------------------------------------------------ 挂载 / 回收
@@ -87,6 +171,8 @@ export class Reader {
       el._st = undefined;
       el._y = NaN;
       this.els.set(i, el);
+      el.classList.toggle('is-browsed', i === this.browse);
+      this._paintPracticeRange(el, i);
       this._apply(el, i);
       for (let j = 0; j < el._chips.length; j++) {
         for (const layer of this.metrics.layers) {
@@ -129,13 +215,30 @@ export class Reader {
    * 句子高度会因此变化, 所以调用方紧接着要让虚拟列表重量这几行;
    * 已经回收进 LRU 缓存的节点也一起改, 免得滚回去看到旧内容。
    */
-  setTranslation(i, text) {
+  setTranslation(i, text, lang) {
     const s = this.track.sentences[i];
     if (!s) return false;
     s.translation = text;
+    s.translationLang = lang;
     const el = this.els.get(i) || this.cache.get(i);
-    if (el) el.lastElementChild.textContent = text;
+    if (el) {
+      el.lastElementChild.lang = lang;
+      el.lastElementChild.textContent = text;
+    }
     return true;
+  }
+
+  // A tag-only lyric update needs no reflow and keeps the current word state.
+  refreshWordClasses(i) {
+    const el = this.els.get(i) || this.cache.get(i);
+    if (!el) return;
+    const { words } = this.track.sentences[i];
+    for (const [j, chip] of el._chips.entries()) {
+      const base = wordClass(words[j]);
+      if (chip._cls === base) continue;
+      chip.className = base + chip.className.slice(chip._cls.length);
+      chip._cls = base;
+    }
   }
 
   // ------------------------------------------------------------ 高亮状态

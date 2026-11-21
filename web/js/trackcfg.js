@@ -16,7 +16,7 @@
  *
  * 四个开关最终写到 `<html>` 的 data-* 上, 由 CSS 决定显隐; JS 侧只有
  * `metrics`/`virtual` 会读 `data-tr` 等来算高度。另外还写两个只读的样式钩子:
- * `data-lang` (选字体) 与 `data-space` (分词语言的词间距要更宽)。
+ * `data-lang`、`data-translation-lang` 选字体，`data-space` 调整分词间距。
  */
 
 import { config, langDefaults } from './config.js';
@@ -26,12 +26,16 @@ import { normalizeVideo, videoOverrides } from './video-config.js';
 import { normalizePronunciation } from './pronunciation-config.js';
 
 const PREFIX = 'linguatrack.track.';
+export const LYRIC_OFFSET_STEP_MS = 200;
+const validLyricOffset = (value) => Number.isSafeInteger(value) && value % LYRIC_OFFSET_STEP_MS === 0;
+export const SONG_PITCH_LIMIT = 6;
+const validSongPitch = (value) => Number.isInteger(value) && Math.abs(value) <= SONG_PITCH_LIMIT;
 
 /** 会持久化的键 (其余字段来自 track.json, 每次打开重新取). */
 const SAVED = ['tr', 'read', 'roman', 'pos', 'card'];
 
 /** 改这些键会影响句子高度, 播放页要重排虚拟列表. */
-const LAYOUT = new Set(['tr', 'read', 'roman']);
+const LAYOUT = new Set(['tr', 'read', 'roman', 'lang']);
 
 /** 当前生效的配置; 播放页只会有一条音频, 所以放模块级. */
 export const trackCfg = {
@@ -45,6 +49,8 @@ export const trackCfg = {
   pos: 1,
   card: 1,          // 点词是否弹释义卡片
   lang: 'zh-CN',    // 译文语言
+  lyricOffsetMs: 0,
+  pitchSemitones: 0,
   fonts: {},       // 只保存这条音频明确调整过的字号
   video: normalizeVideo(),
   pronunciation: normalizePronunciation(),
@@ -63,7 +69,7 @@ export const cfgSupports = (key) => supported.has(key);
  * @param {string} srcLang 源语言代码
  */
 export function readTrackCfg(id, srcLang = '') {
-  const out = { ...langDefaults(srcLang), id, lang: config.targetLang || 'zh-CN', fonts: {},
+  const out = { ...langDefaults(srcLang), id, lang: config.targetLang || 'zh-CN', fonts: {}, lyricOffsetMs: 0, pitchSemitones: 0,
     video: videoSettings(srcLang), videoOverrides: {},
     pronunciation: normalizePronunciation(settings.pronunciation) };
   try {
@@ -71,6 +77,8 @@ export function readTrackCfg(id, srcLang = '') {
     if (saved && typeof saved === 'object') {
       for (const k of SAVED) if (saved[k] !== undefined) out[k] = bit(saved[k], out[k]);
       if (typeof saved.lang === 'string' && saved.lang) out.lang = saved.lang;
+      if (validLyricOffset(saved.lyricOffsetMs)) out.lyricOffsetMs = saved.lyricOffsetMs;
+      if (validSongPitch(saved.pitchSemitones)) out.pitchSemitones = saved.pitchSemitones;
       out.fonts = normalizeFonts(saved.fonts);
       out.videoOverrides = videoOverrides(saved.video);
       out.video = videoSettings(srcLang, out.videoOverrides);
@@ -87,16 +95,16 @@ let fontEdit = null;
 
 /** 字号菜单只更新存档与局部预览, 退出时再统一重排阅读区。 */
 export function deferTrackFontSizes() {
-  const edit = { id: trackCfg.id, fonts: { ...trackCfg.fonts } };
+  const edit = { id: trackCfg.id, sizes: fontSizes(trackCfg.srcLang, trackCfg.fonts) };
   fontEdit = edit;
+  setFontContext(trackCfg.srcLang, edit.sizes);
   return () => {
     if (fontEdit !== edit) return;
     fontEdit = null;
     if (trackCfg.id !== edit.id) return;
-    const before = fontSizes(trackCfg.srcLang, edit.fonts);
     const after = fontSizes(trackCfg.srcLang, trackCfg.fonts);
     applyTrackCfg();
-    if (Object.keys(FONT_DEFAULTS).some((key) => before[key] !== after[key])) {
+    if (Object.keys(FONT_DEFAULTS).some((key) => edit.sizes[key] !== after[key])) {
       onChange('fonts', trackCfg.fonts, true);
     }
   };
@@ -125,11 +133,15 @@ export function initTrackCfg(id, srcLang = '', features = null, handler = null) 
   return trackCfg;
 }
 
-function save() {
+function save(editedKey) {
   if (!trackCfg.id) return;
   let previous = {};
   try { previous = JSON.parse(localStorage.getItem(PREFIX + trackCfg.id) || '{}') || {}; } catch { /* ignore */ }
   const out = { lang: trackCfg.lang, pronunciation: trackCfg.pronunciation };
+  const offset = editedKey === 'lyricOffsetMs' ? trackCfg.lyricOffsetMs : previous.lyricOffsetMs;
+  if (offset && validLyricOffset(offset)) out.lyricOffsetMs = offset;
+  const pitch = editedKey === 'pitchSemitones' ? trackCfg.pitchSemitones : previous.pitchSemitones;
+  if (pitch && validSongPitch(pitch)) out.pitchSemitones = pitch;
   if (Object.keys(trackCfg.fonts).length) out.fonts = trackCfg.fonts;
   if (Object.keys(trackCfg.videoOverrides || {}).length) out.video = trackCfg.videoOverrides;
   for (const k of SAVED) {
@@ -148,8 +160,9 @@ export function applyTrackCfg() {
   d.roman = String(trackCfg.roman);
   d.pos = String(trackCfg.pos);
   if (trackCfg.srcLang) d.lang = trackCfg.srcLang;
+  d.translationLang = trackCfg.lang;
   d.space = String(trackCfg.space);
-  setFontContext(trackCfg.srcLang, fontEdit ? fontEdit.fonts : trackCfg.fonts);
+  setFontContext(trackCfg.srcLang, fontEdit?.sizes || trackCfg.fonts);
 }
 
 export function setTrackFontSize(key, value) {
@@ -178,9 +191,11 @@ export function resetTrackFontSizes() {
 export function setTrackCfg(key, value) {
   if (!(key in trackCfg) || trackCfg[key] === value) return;
   if (SAVED.includes(key) && !supported.has(key)) return;
+  if (key === 'lyricOffsetMs' && (!trackCfg.id || !validLyricOffset(value))) return;
+  if (key === 'pitchSemitones' && (!trackCfg.id || !validSongPitch(value))) return;
   trackCfg[key] = value;
-  save();
-  applyTrackCfg();
+  save(key);
+  if (key !== 'lyricOffsetMs' && key !== 'pitchSemitones') applyTrackCfg();
   onChange(key, value, LAYOUT.has(key));
 }
 

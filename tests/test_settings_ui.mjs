@@ -99,6 +99,49 @@ test('replacing a submenu cleans it up without reopening its parent', (t) => {
   assert.deepEqual(events, ['cleanup']);
 });
 
+test('song font sliders preview each layer, then apply and persist independently', (t) => {
+  const h = harness(t), { api, w, changes } = h, doc = w.document;
+  const song = api.Track.fromData({ id: 'song', language: 'ja', sourceLyrics: {}, sentences: [] });
+  api.initTrackCfg(song.id, song.lang, song.features, (...args) => changes.push(args));
+  api.openTrackSheet(song);
+  h.row('歌词字号').click();
+  const preview = doc.querySelector('.font-preview');
+  assert.equal(preview.querySelector('.font-preview-tr').textContent, '星星的声音');
+  const baseline = { text: 25, read: 14, roman: 13.5, tr: 16.5 };
+  const custom = { text: 32, read: 19.5, roman: 17, tr: 20 };
+  for (const [layer, size] of Object.entries(custom)) {
+    const range = doc.getElementById('lyric-font-' + layer);
+    assert.equal(range.valueAsNumber, baseline[layer]);
+    range.value = String(size);
+    range.dispatchEvent(new w.Event('input'));
+    assert.equal(preview.style.getPropertyValue('--fs-' + layer), size + 'px');
+    assert.equal(doc.documentElement.style.getPropertyValue('--fs-' + layer), baseline[layer] + 'px');
+    assert.equal(api.readTrackCfg(song.id, 'ja').fonts[layer + 'Size'], undefined);
+    range.dispatchEvent(new w.Event('change'));
+    assert.equal(api.readTrackCfg(song.id, 'ja').fonts[layer + 'Size'], size);
+  }
+  assert.deepEqual(changes, []);
+  const pick = (label) => [...doc.querySelectorAll('.sheet-foot .btn')].find((b) => b.textContent === label).click();
+  pick('恢复语言默认');
+  assert.equal(preview.style.getPropertyValue('--fs-read'), '14px');
+  assert.deepEqual(Object.keys(api.trackCfg.fonts), []);
+  const reading = doc.getElementById('lyric-font-read');
+  reading.value = '18';
+  reading.dispatchEvent(new w.Event('input'));
+  reading.dispatchEvent(new w.Event('change'));
+  pick('设为日语默认');
+  assert.equal(api.settings.fonts.ja.readSize, 18);
+  assert.equal(doc.documentElement.style.getPropertyValue('--fs-read'), '14px');
+  h.close();
+  assert.equal(doc.documentElement.style.getPropertyValue('--fs-read'), '18px');
+  assert.equal(changes.filter(([key]) => key === 'fonts').length, 1);
+  assert.ok(h.row('歌词字号'));
+  api.initTrackCfg('next-song', 'ja');
+  assert.equal(doc.documentElement.style.getPropertyValue('--fs-read'), '18px');
+  api.initTrackCfg('english', 'en');
+  assert.equal(doc.documentElement.style.getPropertyValue('--fs-read'), '14px');
+});
+
 test('global font languages refresh both previews and retain independent ordinary and system sizes', (t) => {
   const h = harness(t), api = h.api, doc = h.w.document;
   h.w.localStorage.setItem('linguatrack.settings.v1', JSON.stringify({ video: { captionSize: 26, position: 60 } }));

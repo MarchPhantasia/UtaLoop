@@ -9,11 +9,12 @@
 import { layoutHeight, locateOffset } from './util.js';
 
 export class VirtualList {
-  constructor(scroller, viewport, reader, metrics) {
+  constructor(scroller, viewport, reader, metrics, setScrollTop = (y) => { scroller.scrollTop = y; }) {
     this.scroller = scroller;
     this.viewport = viewport;
     this.reader = reader;
     this.metrics = metrics;
+    this.setScrollTop = setScrollTop;
     this.overscan = 700;
     this.followSingle = false;
     this.gap = 4;
@@ -66,7 +67,7 @@ export class VirtualList {
   /** 让第 i 句停在视口 align 位置 (0=顶部, .5=居中). */
   scrollTargetFor(i, align) {
     const vh = this.scroller.clientHeight;
-    const y = this.off[i] - (vh - this.h[i]) * align;
+    const y = this.off[i] - Math.max(0, vh - this.h[i]) * align;
     const max = Math.max(0, this.total + this.padBottom - vh);
     return Math.max(0, Math.min(y, max));
   }
@@ -109,9 +110,8 @@ export class VirtualList {
     // 2) 挂载并定位 (纯写)
     let newFrom = -1, newTo = -1;
     for (let i = first; i <= last; i++) {
-      const fresh = !this.reader.els.has(i);
       this.reader.mount(i, off[i]);
-      if (fresh && !this.measured[i]) {
+      if (!this.measured[i]) {
         if (newFrom < 0) newFrom = i;
         newTo = i;
       }
@@ -138,7 +138,7 @@ export class VirtualList {
     this.rebuild(dirty);
     if (anchor >= dirty) {
       const fixed = Math.max(0, off[anchor] + delta);
-      if (Math.abs(fixed - sc.scrollTop) > 0.5) sc.scrollTop = fixed;
+      if (Math.abs(fixed - sc.scrollTop) > 0.5) this.setScrollTop(fixed);
     }
     this.reposition();
   }
@@ -198,7 +198,7 @@ export class VirtualList {
     this.rebuild(dirty);
     if (anchor >= dirty) {
       const fixed = Math.max(0, this.off[anchor] + delta);
-      if (Math.abs(fixed - sc.scrollTop) > 0.5) sc.scrollTop = fixed;
+      if (Math.abs(fixed - sc.scrollTop) > 0.5) this.setScrollTop(fixed);
     }
     this.reposition();
     return true;
@@ -213,7 +213,7 @@ export class VirtualList {
     this._vh = -1;
     if (keepIndex >= 0 && keepIndex < this.count) {
       this.update(true);
-      this.scroller.scrollTop = this.scrollTargetFor(keepIndex, align);
+      this.setScrollTop(this.scrollTargetFor(keepIndex, align));
     }
     this.update(true);
   }

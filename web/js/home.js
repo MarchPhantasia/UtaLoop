@@ -14,23 +14,25 @@
 
 import {
   config, loadConfig, setConfig, setLangConfig, langDefaults, langName, TARGET_LANGS,
-  PROMPT_META, DEFAULT_PROMPTS, resetPrompt, DEFAULTS, LANG_DEFAULTS, onConfigChange,
+  LANG_DEFAULTS, onConfigChange,
 } from './config.js';
 import { initSettings, settings, setSetting } from './settings.js';
+import { showCover } from './music-art.js';
 import { featureKeys, featureText, mergeCatalog, sourceLangs, sourceName, sourceSpec } from './langs.js';
 import { baseLabel, health } from './api.js';
 import { createTrack, flushPositions, listTracks, patchTrack, removeTrack } from './library.js';
 import { MEDIA_ACCEPT, isMediaFile, mediaKind } from './media.js';
-import { probe } from './llm.js';
+import { aiSettingsEntry } from './ai-settings.js';
 import { errorMessage } from './errors.js';
 import { openSheet, closeSheet, openConfirm, openMenu } from './sheet.js';
 import {
   sectionTitle, group, switchRow, segRow, navRow, actionRow, infoRow,
-  inputField, inputRow, textField, buttonBar, button,
+  inputField, buttonBar, button,
 } from './rows.js';
 import { stats, clearAll, wipeTrack, isDegraded, usage } from './store.js';
 import { el, icon, toast, fmtTime, fmtSize, dayKey, debounce } from './util.js';
 import { enterView } from './motion.js';
+import { writeHistory } from './navigation.js';
 import { createKeyedList } from './keyed-list.js';
 import { nativeApp, nativeReady } from './native.js';
 import { FRONTEND_VERSION } from './version.js';
@@ -154,6 +156,19 @@ function cardOf(t) {
   card.dataset.trackId = t.id;
   const titleNode = el('div', 'card-t', t.title || t.id);
   const { panel, top } = panelOf(video ? 'i-video' : 'i-wave', metaOf(t), titleNode);
+  let lastCover;
+  function displayArt() {
+    if (!t.musicId || lastCover === (t.cover || '')) return;
+    lastCover = t.cover || '';
+    const art = top.querySelector('.art');
+    art.querySelector('img')?.remove();
+    const image = document.createElement('img'); image.loading = 'lazy'; art.append(image);
+    showCover(image, { cover: t.cover, id: t.musicId, pixels: 96, onFound: cover => {
+      lastCover = cover;
+      void patchTrack(t.id, { cover }).catch(() => {});
+    } });
+  }
+  displayArt();
   let rename = null;
   const startRename = () => {
     rename = renameCard(titleNode, async (title) => {
@@ -202,6 +217,7 @@ function cardOf(t) {
   });
   card.updateTrack = (next) => {
     t = next;
+    displayArt();
     const nextVideo = mediaKind(t.audio) === 'video';
     if (nextVideo !== video) {
       video = nextVideo;
@@ -502,6 +518,16 @@ function ensureWorkbench() {
   }).finally(() => { workbenchLoading = null; });
 }
 
+const nav = document.querySelector('.nav');
+function positionNavHighlight() {
+  const selected = nav.querySelector('.is-on');
+  if (!selected) return;
+  nav.style.setProperty('--nav-left', selected.offsetLeft + 'px');
+  nav.style.setProperty('--nav-width', selected.offsetWidth + 'px');
+  nav.classList.add('has-highlight');
+}
+new ResizeObserver(positionNavHighlight).observe(nav);
+
 function go(id) {
   if (!VIEWS.includes(id) || (id === 'viewWorkbench' && !experimentsEnabled())) id = 'viewHome';
   const previous = currentView;
@@ -516,10 +542,16 @@ function go(id) {
     if (on) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   }
+  positionNavHighlight();
   $('btnAdd').hidden = id !== 'viewHome';
   if (id === 'viewSet') paintSettings();
-  const tag = id === 'viewHome' ? '' : id === 'viewWorkbench' ? '#workbench' : id === 'viewFavorites' ? '#favorites' : '#set';
-  history.replaceState(null, '', location.pathname + location.search + tag);
+  const tag = id === 'viewHome' ? '' : id === 'viewWorkbench' ? '#workbench' : id === 'viewFavorites' ? '#favorites'
+    : location.hash.toLowerCase() === '#model' ? '#model' : '#set';
+  if (location.hash !== tag) {
+    const url = new URL(location.href);
+    url.hash = tag;
+    if (!writeHistory('replaceState', history.state, url)) location.replace(url.href);
+  }
 }
 
 for (const b of document.querySelectorAll('.nav-i')) {
@@ -562,13 +594,7 @@ function paintSettings() {
   });
 
   box.append(
-    sectionTitle('连接与模型'),
-    group(
-      navRow('分析后端', '', { value: baseLabel(), onPick: apiPane }),
-      navRow('大模型', '', { value: config.model || '未配置', onPick: llmPane }),
-      navRow('提示词', '', { value: PROMPT_META.length + ' 组', onPick: promptPane }),
-      navRow('调用参数', '', { value: `${config.batchSize} × ${config.concurrency}`, onPick: tunePane }),
-    ),
+    aiSettingsEntry(),
     sectionTitle('学习偏好'),
     group(
       navRow('译文语言', '', { value: langName(config.targetLang), onPick: langPane }),
@@ -590,6 +616,7 @@ function paintSettings() {
     ),
     sectionTitle('系统'),
     group(
+      navRow('分析后端', '', { value: baseLabel(), onPick: apiPane }),
       switchRow('实验性功能', '启用音频提取与语音转录工作台',
         () => experimentsEnabled(), (v) => setConfig({ experimental: v })),
       svc,
@@ -743,147 +770,12 @@ function langFeaturePane(code) {
 }
 
 /** 接口地址 / 密钥 / 模型 + 连通性自检. */
-function llmPane() {
-  const body = el('div', 'pane');
-  const state = el('div', 'pane-note');
-  state.setAttribute('role', 'status');
-  state.hidden = true;
-
-  body.append(
-    inputField('接口地址', {
-      value: config.baseUrl, placeholder: 'https://api.example.com/v1',
-      onInput: (v) => setConfig({ baseUrl: v }),
-    }),
-    inputField('API Key', {
-      value: config.apiKey, placeholder: 'sk-…', secret: true,
-      onInput: (v) => setConfig({ apiKey: v }),
-    }),
-    inputField('模型名', {
-      value: config.model, placeholder: 'deepseek-v4-flash',
-      onInput: (v) => setConfig({ model: v }),
-    }),
-  );
-
-  const test = button('测试连接', {
-    main: true, glyph: 'i-check',
-    onPick: async () => {
-      state.hidden = false;
-      state.textContent = '正在测试连接…';
-      test.disabled = true;
-      try {
-        await probe();
-        state.textContent = '连接成功';
-      } catch (err) {
-        state.textContent = errorMessage(err, '连接失败，请检查模型配置后重试');
-      } finally {
-        test.disabled = false;
-      }
-    },
-  });
-  body.append(buttonBar(test), state);
-  openSheet('大模型', body, { cls: 'sheet-tall', onClose: paintSettings });
-}
-
-/** 数值输入 (输入框跟在参数名后面): 只在能解析且落在区间内时才写回, 允许中途乱输. */
-function numField(label, key, { min = 0, max = 999, step = 1 } = {}) {
-  const row = inputRow(label, {
-    value: config[key], type: 'number', min, max, step,
-    onInput: (raw) => {
-      const n = Number(raw);
-      if (!raw.trim() || !Number.isFinite(n) || n < min || n > max) return;
-      setConfig({ [key]: step < 1 ? n : Math.round(n) });
-    },
-  });
-  row.input.addEventListener('change', () => { row.input.value = String(config[key]); });
-  return row;
-}
-
-function tunePane() {
-  const body = el('div', 'pane');
-  body.append(
-    group(
-      numField('每批句数', 'batchSize', { min: 1, max: 20 }),
-      numField('并发请求数', 'concurrency', { min: 1, max: 8 }),
-      numField('上文句数', 'ctxBefore', { min: 0, max: 10 }),
-      numField('下文句数', 'ctxAfter', { min: 0, max: 10 }),
-      numField('温度', 'temperature', { min: 0, max: 1, step: 0.1 }),
-      numField('输出上限（Token）', 'maxTokens', { min: 256, max: 8192 }),
-      numField('请求超时（秒）', 'timeout', { min: 10, max: 600 }),
-    ),
-    group(switchRow('JSON 模式', '',
-      () => config.jsonMode, (v) => setConfig({ jsonMode: v }))),
-    buttonBar(button('恢复默认', {
-      glyph: 'i-refresh',
-      onPick: () => {
-        setConfig({
-          batchSize: DEFAULTS.batchSize, concurrency: DEFAULTS.concurrency,
-          ctxBefore: DEFAULTS.ctxBefore, ctxAfter: DEFAULTS.ctxAfter,
-          temperature: DEFAULTS.temperature, timeout: DEFAULTS.timeout,
-          maxTokens: DEFAULTS.maxTokens, jsonMode: DEFAULTS.jsonMode,
-        });
-        closeSheet();
-        tunePane();
-      },
-    })),
-  );
-  openSheet('调用参数', body, { cls: 'sheet-tall', onClose: paintSettings });
-}
-
 function langPane() {
   const body = el('div', 'pane');
   body.append(group(segRow('译文语言', '',
     () => config.targetLang, (v) => setConfig({ targetLang: v }),
     TARGET_LANGS.map((l) => [l.code, l.name]), { wrap: true })));
   openSheet('译文语言', body, { onClose: paintSettings });
-}
-
-function promptPane() {
-  const body = el('div', 'pane');
-  const rows = PROMPT_META.map((m) => navRow(m.title, '', {
-    value: config.prompts[m.key] === DEFAULT_PROMPTS[m.key] ? '默认' : '已修改',
-    onPick: () => promptEdit(m),
-  }));
-  body.append(
-    group(...rows),
-    buttonBar(button('全部恢复默认', {
-      glyph: 'i-refresh', danger: true,
-      onPick: async () => {
-         const ok = await openConfirm('恢复默认提示词', '将覆盖全部自定义提示词。此操作无法撤销。',
-          { ok: '恢复', danger: true });
-        if (!ok) return;
-        for (const m of PROMPT_META) resetPrompt(m.key);
-        toast('已恢复默认');
-        promptPane();
-      },
-    })),
-  );
-  openSheet('提示词', body, { cls: 'sheet-tall', onClose: paintSettings });
-}
-
-function promptEdit(m) {
-  let text = config.prompts[m.key];
-  const field = textField(m.title, { value: text, rows: 14, onInput: (v) => { text = v; } });
-  const vars = el('div', 'vars');
-  for (const v of String(m.vars || '').split(/\s+/).filter(Boolean)) {
-    vars.append(el('span', null, `{{${v}}}`));
-  }
-  const body = el('div', 'pane');
-  body.append(field, el('p', 'field-hint', '{{src}}：源语言；{{dst}}：译文语言'), vars, buttonBar(
-    button('保存', {
-      main: true,
-      onPick: () => { setConfig({ prompts: { [m.key]: text } }); toast('已保存'); closeSheet(); },
-    }),
-    button('恢复默认', {
-      glyph: 'i-refresh',
-      onPick: () => {
-        resetPrompt(m.key);
-        text = config.prompts[m.key];
-        field.input.value = text;
-        toast('已恢复默认');
-      },
-    }),
-  ));
-  openSheet(m.title, body, { cls: 'sheet-tall', onClose: promptPane });
 }
 
 /** 两类数据分开看: 大模型缓存清了只是重烧 token, 音频库是用户的资产. */
@@ -934,9 +826,10 @@ function boot() {
   syncExperiments();
   onConfigChange((_cfg, patch) => { if ('experimental' in patch) syncExperiments(); });
   const hash = (location.hash || '').replace('#', '').toLowerCase();
-  const start = hash === 'set' || hash === 'restore' ? 'viewSet'
+  const start = ['set', 'restore', 'model'].includes(hash) ? 'viewSet'
     : hash === 'workbench' ? 'viewWorkbench' : hash === 'favorites' ? 'viewFavorites' : 'viewHome';
   go(start);
+  if (hash === 'model') dom.set.querySelector('.ai-settings-entry').click();
   refresh().then(() => {
     if (hash === 'restore') {
       openFileRepair(tracks, { imported: true, onUpdate: refresh,
@@ -948,8 +841,12 @@ function boot() {
     if (!document.hidden) refresh();
   });
   addEventListener('pageshow', (e) => { if (e.persisted) refresh(); });
-  addEventListener('hashchange', () => go(location.hash === '#workbench' ? 'viewWorkbench'
-    : location.hash === '#set' ? 'viewSet' : location.hash === '#favorites' ? 'viewFavorites' : 'viewHome'));
+  addEventListener('hashchange', () => {
+    const model = location.hash === '#model';
+    go(location.hash === '#workbench' ? 'viewWorkbench'
+      : model || location.hash === '#set' ? 'viewSet' : location.hash === '#favorites' ? 'viewFavorites' : 'viewHome');
+    if (model) dom.set.querySelector('.ai-settings-entry').click();
+  });
 }
 
 boot();

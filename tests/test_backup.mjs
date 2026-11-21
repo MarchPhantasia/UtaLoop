@@ -5,6 +5,9 @@ import { BACKUP_FORMAT, BACKUP_VERSION, BACKUP_STORES, GLOBAL_KEYS,
 import { STORES, snapshot, writeBatch, put, get, del } from '../web/js/store.js';
 import { matchFiles, missingFiles, removeTrack, saveAnalysis, transcriptBlob } from '../web/js/library.js';
 import { plainTrack } from '../web/js/subtitles.js';
+import { setSungReading, songLyrics, sungReadingTargets } from '../web/js/music-lyrics.js';
+import { MUSIC_QUALITY_KEY } from '../web/js/music-api.js';
+import { SONG_VOLUME_KEY } from '../web/js/song-controls.js';
 
 const empty = () => Object.fromEntries(BACKUP_STORES.map((name) => [name, []]));
 const row = (key, value, track = key.split('|')[0]) => ({ key, value, track, at: 1234 });
@@ -60,7 +63,7 @@ test('export includes every data store and saved configuration, but only source 
   await put('audio', 'lesson', new Blob(['AUDIO_SECRET']), 'lesson');
   await put('transcripts', 'lesson', new Blob(['SUBTITLE_SECRET']), 'lesson');
   localStorage.setItem('other-app.secret', 'unrelated');
-  const backup = parseBackup(JSON.stringify(await exportBackup()));
+  const backup = parseBackup(JSON.stringify(await exportBackup({ includeCredentials: true })));
   assert.deepEqual(backup.stores.tracks[0].value.audio, { name: 'lesson.wav' });
   assert.deepEqual(backup.stores.tracks[0].value.transcript, { name: 'lesson.srt' });
   assert.deepEqual(backup.stores.data[0].value.audio, { duration: 1 });
@@ -111,7 +114,66 @@ test('fresh restore retains analysis and all LLM outputs and records both missin
   assert.equal((await get('tracks', 'lesson')).status, 'ready');
   assert.equal(missingFiles([await get('tracks', 'lesson')]).length, 2);
   assert.deepEqual((await exportBackup()).stores.data[0].value, backup.stores.data[0].value);
-  assert.deepEqual((await exportBackup()).localStorage, backup.localStorage);
+  assert.deepEqual((await exportBackup({ includeCredentials: true })).localStorage, backup.localStorage);
+});
+
+test('version 3 carries original lyrics, pronunciation corrections, study lists, checkpoints and music settings', async () => {
+  const raw = { yrc: '[1000,1200](1000,700,0)幸福(1700,500,0)な', tlyric: '[00:01]幸福的',
+    romalrc: '[00:01]ko u fu ku na' };
+  const data = songLyrics({ id: 123, name: '練習曲', duration: 5 }, raw);
+  const id = data.id;
+  data.sentences[0] = setSungReading(data.sentences[0], sungReadingTargets(data.sentences[0])[0], 'しあわせ');
+  const record = { id, musicId: 123, title: data.title, lang: 'ja', status: 'ready', audio: { name: data.title } };
+  const progress = { track: id, id: 123, name: data.title, state: 'learning', practiced: 900, marked: 400, checkpoint: 1.7 };
+  const unopened = { track: 'netease-456', id: 456, name: '未打开的歌', state: 'learned', marked: 800 };
+  const original = fixture();
+  original.stores.tracks.push(row(id, record));
+  original.stores.data.push(row(id, data));
+  original.stores.study.push(row(id, progress), row(unopened.track, unopened));
+  original.localStorage[MUSIC_QUALITY_KEY] = 'lossless';
+  original.localStorage[SONG_VOLUME_KEY] = JSON.stringify({ gain: 0.42, muted: false });
+  original.localStorage['utaloop.music.retention'] = 'long';
+  await seed(original);
+  const backup = parseBackup(JSON.stringify(await exportBackup()));
+  assert.equal(backup.version, 3);
+  assert.equal(backup.includesCredentials, false);
+  assert.doesNotMatch(backup.localStorage[GLOBAL_KEYS[0]], /model-secret|backend-secret|asr-secret/);
+  assert.equal(backup.localStorage['utaloop.music.retention'], undefined);
+  assert.deepEqual(backup.stores.data.find(r => r.key === id).value, data);
+
+  const plan = prepareImport(backup, empty(), {});
+  assert.deepEqual(plan.batches.study.map(r => r.value), [progress, unopened]);
+  assert.equal(plan.batches.tracks.find(r => r.key === id).value.audio.missing, undefined);
+  assert.equal(plan.changes.get(MUSIC_QUALITY_KEY), 'lossless');
+  assert.deepEqual(JSON.parse(plan.changes.get(SONG_VOLUME_KEY)), { gain: 0.42, muted: false });
+  assert.equal(prepareImport(backup, empty(), {}, { restoreConfig: false }).changes.has(MUSIC_QUALITY_KEY), false);
+
+  const conflicting = prepareImport(backup, backup.stores, backup.localStorage);
+  const copy = conflicting.mapping.get(id);
+  assert.notEqual(copy, id);
+  assert.deepEqual(conflicting.batches.study[0].value, { ...progress, track: copy });
+  assert.equal(conflicting.batches.study.some(r => r.key === unopened.track), false);
+
+  const markedBeforePlayback = empty();
+  markedBeforePlayback.study.push(row(id, progress));
+  assert.equal(prepareImport(backup, markedBeforePlayback, {}).mapping.get(id), id);
+});
+
+test('version 1 and 2 imports preserve newer local study lists and standalone music settings', () => {
+  const current = empty();
+  current.study.push(row('netease-456', { track: 'netease-456', id: 456, name: '在学', state: 'learning' }));
+  for (const version of [1, 2]) {
+    const backup = fixture();
+    backup.version = version;
+    delete backup.stores.study;
+    if (version === 1) delete backup.stores.favorites;
+    const parsed = parseBackup(JSON.stringify(backup));
+    const plan = prepareImport(parsed, current, { [MUSIC_QUALITY_KEY]: 'hires' });
+    assert.equal(plan.batches.tracks.length, 1);
+    assert.deepEqual(plan.batches.study, []);
+    assert.equal(plan.changes.has(MUSIC_QUALITY_KEY), false);
+    assert.equal(plan.changes.has(SONG_VOLUME_KEY), false);
+  }
 });
 
 test('independent subtitle fonts survive backup restore and reject invalid sizes', async () => {
@@ -227,6 +289,50 @@ test('credentials can be excluded without erasing destination secrets or mutatin
   assert.equal(cfg.model, 'test-model');
 });
 
+test('a credential-free backup strips every provider key and restores only keys for matching endpoints', async () => {
+  const original = fixture();
+  const cfg = JSON.parse(original.localStorage[GLOBAL_KEYS[0]]);
+  cfg.baseUrl = 'https://first.example/v1';
+  cfg.activeProviderId = 'first';
+  cfg.providers = [
+    { id: 'first', name: 'First', baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, reasoningEffort: 'low' },
+    { id: 'second', name: 'Second', baseUrl: 'https://second.example', apiKey: 'second-secret',
+      model: 'other-model', reasoningEffort: 'high' },
+  ];
+  original.localStorage[GLOBAL_KEYS[0]] = JSON.stringify(cfg);
+  await seed(original);
+  const backup = await exportBackup({ includeCredentials: false });
+  assert.doesNotMatch(backup.localStorage[GLOBAL_KEYS[0]], /model-secret|second-secret/);
+  const local = {
+    [GLOBAL_KEYS[0]]: JSON.stringify({ providers: [
+      { ...cfg.providers[0], baseUrl: 'https://first.example/v1/chat/completions', apiKey: 'keep-first' },
+      { ...cfg.providers[1], baseUrl: 'https://different.example', apiKey: 'unrelated-key' },
+    ] }),
+  };
+  const plan = prepareImport(backup, empty(), local);
+  const restored = JSON.parse(plan.changes.get(GLOBAL_KEYS[0]));
+  assert.equal(restored.apiKey, 'keep-first');
+  assert.equal(restored.providers[0].apiKey, 'keep-first');
+  assert.equal(restored.providers[1].apiKey, undefined);
+  assert.equal(restored.providers[1].reasoningEffort, 'high');
+});
+
+test('credential-free imports never reuse an analysis or transcription secret for a different address', () => {
+  const backup = fixture();
+  backup.includesCredentials = false;
+  backup.localStorage[GLOBAL_KEYS[0]] = JSON.stringify({
+    apiBase: 'https://new.example/analysis', asrBaseUrl: 'https://same.example/v1',
+  });
+  const previous = { [GLOBAL_KEYS[0]]: JSON.stringify({
+    apiBase: 'https://previous.example/analysis', apiToken: 'old-analysis-key',
+    asrBaseUrl: 'https://same.example/v1/', asrApiKey: 'old-asr-key',
+  }) };
+  const plan = prepareImport(backup, empty(), previous);
+  const cfg = JSON.parse(plan.changes.get(GLOBAL_KEYS[0]));
+  assert.equal(cfg.apiToken, undefined);
+  assert.equal(cfg.asrApiKey, 'old-asr-key');
+});
+
 test('global configuration can be kept while track configuration still follows imported tracks', () => {
   const plan = prepareImport(fixture(), empty(), {}, { restoreConfig: false });
   assert.deepEqual([...plan.changes.keys()], ['linguatrack.track.lesson']);
@@ -255,6 +361,10 @@ test('invalid, future, mismatched and malicious archives fail before changing st
     (b) => { b.localStorage[GLOBAL_KEYS[0]] = '{"langs":{"__proto__":{"tr":1}}}'; },
     (b) => { b.localStorage[GLOBAL_KEYS[2]] = '[{"code": 123}]'; },
     (b) => { b.stores.chat[0].value.msgs[0].content = {}; },
+    (b) => { b.stores.study.push(row('lesson', { track: 'another', id: 'lesson', name: 'Invalid', checkpoint: 0 })); },
+    (b) => { b.stores.study.push(row('lesson', { track: 'lesson', id: 'lesson', name: 'Invalid', checkpoint: -1 })); },
+    (b) => { b.localStorage[MUSIC_QUALITY_KEY] = 'unknown'; },
+    (b) => { b.localStorage[SONG_VOLUME_KEY] = '{"gain":2,"muted":false}'; },
   ];
   for (const mutate of invalid) {
     const backup = fixture();

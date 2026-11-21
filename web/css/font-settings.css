@@ -81,6 +81,74 @@ html:not(.video-immersive) .font-pane .rows { padding: 0; background: transparen
   .font-preview { height: 130px; }
 }
 
+.lyric-font-sheet {
+  --maxw: 460px;
+  max-height: min(90vh, 620px);
+  max-height: min(90dvh, calc(100dvh - var(--safe-t) - 8px), 620px);
+}
+.lyric-font-sheet .sheet-head h2 { font-size: 18px; }
+.lyric-font-preview {
+  display: flex;
+  flex-direction: column;
+  height: 152px;
+  height: clamp(152px, 20dvh, 176px);
+  max-height: none;
+  padding: 10px 12px;
+  margin: 4px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: var(--bg-soft);
+}
+.lyric-font-preview .font-preview-words { flex: none; justify-content: center; margin-block-start: auto; }
+.lyric-font-preview .font-preview-tr { flex: none; margin: 4px 0 auto; text-align: center; }
+.lyric-font-row {
+  display: grid;
+  grid-template-columns: 4.75rem minmax(0, 1fr) 3.25rem;
+  align-items: center;
+  gap: 8px;
+  min-height: 49px;
+  border-bottom: 1px solid var(--line);
+}
+.lyric-font-row label { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.lyric-font-value { text-align: end; font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.lyric-font-slider {
+  --font-slider-rail: linear-gradient(to right, var(--accent) var(--font-slider-fill), var(--line-2) var(--font-slider-fill));
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  touch-action: pan-y;
+}
+.lyric-font-slider::-webkit-slider-runnable-track { height: 5px; border-radius: 10px; background: var(--font-slider-rail); }
+.lyric-font-slider::-moz-range-track { height: 5px; border-radius: 10px; background: var(--font-slider-rail); }
+.lyric-font-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 19px; height: 19px; margin-top: -7px;
+  border: 2px solid var(--sheet); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--accent);
+}
+.lyric-font-slider::-moz-range-thumb {
+  box-sizing: border-box; width: 19px; height: 19px;
+  border: 2px solid var(--sheet); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--accent);
+}
+.lyric-font-caption summary {
+  display: flex; align-items: center; justify-content: space-between; min-height: 44px;
+  padding-inline: 4px; list-style: none; cursor: pointer; color: var(--ink-3); font-size: 13px;
+}
+.lyric-font-caption summary::-webkit-details-marker { display: none; }
+.lyric-font-caption summary::after {
+  content: ''; width: 7px; height: 7px; margin-inline: 8px;
+  border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
+}
+.lyric-font-caption[open] summary::after { transform: rotate(225deg); }
+.lyric-font-sheet .sheet-foot .field-acts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.lyric-font-sheet .sheet-foot button { min-height: 44px; min-width: 0; padding-inline: 6px; justify-content: center; }
+
 .video-preview {
   position: relative;
   z-index: 2;

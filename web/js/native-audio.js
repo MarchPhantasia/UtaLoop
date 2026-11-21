@@ -19,6 +19,7 @@ export class NativeAudio extends EventTarget {
     this._revision = 0; this._serial = 0; this._generation = 0; this._queue = Promise.resolve();
     this._blob = null; this._record = null; this._detached = false; this._loop = { start: null, end: null, all: false };
     this._sourceAbort = null;
+    this._volume = 1; this._muted = false;
     this._appActive = true;
     window.addEventListener('native-app-state', ({ detail }) => {
       this._appActive = detail.active; this._visibilityChanged();
@@ -40,6 +41,17 @@ export class NativeAudio extends EventTarget {
   get currentTime() {
     const advance = !this.paused && !this._waiting && !this.seeking ? (performance.now() - this._anchor) / 1000 * this._rate : 0;
     return clamp(this._position + advance, 0, Number.isFinite(this.duration) ? this.duration : Infinity);
+  }
+  get volume() { return this._volume; }
+  set volume(value) {
+    this._volume = Math.max(0, Math.min(1, Number(value) || 0));
+    this._setVolume();
+  }
+  get muted() { return this._muted; }
+  set muted(value) { this._muted = !!value; this._setVolume(); }
+  _setVolume() {
+    if (this.readyState) void this._command('volume', { volume: this._volume, muted: this._muted }).catch(error => this._fail(error));
+    this._emit('volumechange');
   }
   set currentTime(value) {
     if (!Number.isFinite(value)) return;
@@ -121,7 +133,9 @@ export class NativeAudio extends EventTarget {
         await this.bridge.append({ session, offset, data });
       }
       current(); const state = await this.bridge.prepare({ session }); current();
-      this._accept(state); this._emit('loadedmetadata'); this._emit('canplay');
+      this._accept(state);
+      if (this._volume !== 1 || this._muted) this._setVolume();
+      this._emit('loadedmetadata'); this._emit('canplay');
     } catch (error) {
       await this.bridge.release({ session }).catch(() => {});
       if (generation === this._generation) { this.src = ''; this.readyState = 0; this.error = error; }

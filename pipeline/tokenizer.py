@@ -13,19 +13,20 @@ from __future__ import annotations
 import csv
 import io
 import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
 from .kana import expand_choon, furigana_for, is_all_kana, kana_to_romaji, to_katakana
 from .pos import classify, pos_chain
 
-# UniDic 特征列下标 (unidic-cwj/csj 2.x); unidic-lite 只有前 17 列, 取值时做长度保护
+# UniDic 各版本共有的列。2.1.2 源版、二进制版和 2.2+ 的附加列不同。
 _F_POS1, _F_POS2, _F_POS3, _F_POS4 = 0, 1, 2, 3
 _F_CTYPE, _F_CFORM = 4, 5
 _F_LFORM, _F_LEMMA = 6, 7
 _F_PRON = 9
 _F_GOSHU = 12
-_F_KANA = 20
+_F_KANA_BY_SIZE = {26: 17, 29: 20}  # 仮名形出現形（kana）
 
 
 @dataclass(slots=True)
@@ -115,7 +116,7 @@ class JapaneseTokenizer:
             if rcfile.is_file():
                 args += ["-r", rcfile.as_posix()]
             args += ["-d", dic_posix]
-        self._tagger = fugashi.GenericTagger(" ".join(args)) if args else fugashi.GenericTagger()
+        self._tagger = fugashi.GenericTagger(shlex.join(args)) if args else fugashi.GenericTagger()
 
     # ------------------------------------------------------------------ 分词
 
@@ -152,15 +153,13 @@ class JapaneseTokenizer:
     @staticmethod
     def _reading(fields: list[str], surface: str) -> str:
         """出现形的片假名读音."""
-        kana = _cell(fields, _F_KANA)
+        kana_column = _F_KANA_BY_SIZE.get(len(fields))
+        kana = _cell(fields, kana_column) if kana_column is not None else ""
         if kana:
             return kana
-        pron = _cell(fields, _F_PRON)
-        if pron:
-            return expand_choon(pron)
         if is_all_kana(surface):
             return to_katakana(surface)
-        return ""
+        return expand_choon(_cell(fields, _F_PRON))
 
     @staticmethod
     def _pron(fields: list[str], kana: str) -> str:

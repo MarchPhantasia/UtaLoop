@@ -13,13 +13,13 @@ export function openSubtitleEditor(defaults, { onSave, onClose } = {}) {
   const retranslation = switchRow('重新翻译', '', () => values.retranslate,
     (on) => { values.retranslate = !!on; });
   function syncAnalysis() {
-    const required = !!defaults.hasAnalysis && values.text.trim() !== defaults.text;
+    const required = !!defaults.hasAnalysis && values.text.trim() !== defaults.text.trim();
     values.reanalyze = required || requestedAnalysis;
     analysis.querySelector('button').disabled = required;
     analysis.refresh();
   }
   function syncTranslation() {
-    const sourceChanged = values.text.trim() !== defaults.text;
+    const sourceChanged = values.text.trim() !== defaults.text.trim();
     const translationChanged = values.translation.trim() !== (defaults.translation || '').trim();
     values.retranslate = sourceChanged && !translationChanged;
     retranslation.refresh();

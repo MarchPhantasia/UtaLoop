@@ -1,0 +1,26 @@
+{
+  "dotnet-sdk.zip": {
+    "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.404/dotnet-sdk-10.0.404-win-x64.zip",
+    "sha256": "f94f02eb8451605a893164bbd9c14e7f00ac8914c370c322822e6ac91b106bcc"
+  },
+  "nsis.zip": {
+    "url": "https://master.dl.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12.zip",
+    "sha256": "56581f90db321581c5381193d796fffcf2d24b2f8fed2160a6c6a3baa67f2c4f"
+  },
+  "node-runtime.zip": {
+    "url": "https://nodejs.org/dist/v24.22.1/node-v24.22.1-win-x64.zip",
+    "sha256": "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5"
+  },
+  "python-portable.zip": {
+    "url": "https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-amd64.zip",
+    "sha256": "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159"
+  },
+  "fugashi.whl": {
+    "url": "https://files.pythonhosted.org/packages/71/0e/a5776ae1e355d2db9a3874cbdbf9c7325cbd11b300f1a25d3e86ecb26420/fugashi-1.5.2-cp314-cp314-win_amd64.whl",
+    "sha256": "a3c69086650a66bfffb5dd4952d42a9274cea9b110df7b4837c74da1fe4f98f3"
+  },
+  "unidic-lite.tar.gz": {
+    "url": "https://files.pythonhosted.org/packages/55/2b/8cf7514cb57d028abcef625afa847d60ff1ffbf0049c36b78faa7c35046f/unidic-lite-1.0.8.tar.gz",
+    "sha256": "db9d4572d9fdd4d00a97949d4b0741ec480ee05a7e7e2e32f547500dae27b245"
+  }
+}

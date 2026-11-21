@@ -21,6 +21,7 @@ import os
 import re
 from functools import partial
 from http import HTTPStatus
+from http.client import HTTPConnection, HTTPException
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address
 from pathlib import Path
@@ -28,8 +29,11 @@ from urllib.parse import urlsplit
 
 from .api import Api
 from .frontend_cache import MANIFEST_NAME, frontend_manifest
+from .llm_relay import MODEL_ROUTES, forward_model_request
 
 _RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+_MUSIC_MEDIA_RE = re.compile(r"/music/media/[a-f0-9]{36}")
+_MUSIC_CACHE_ACTIONS = {"cache-info", "cache-limit", "cache-clear"}
 
 for _ext, _mime in {
     ".js": "text/javascript",
@@ -45,6 +49,8 @@ for _ext, _mime in {
 class RangeHandler(SimpleHTTPRequestHandler):
     api: Api | None = None          # serve() 会派生一个带 api 的子类
     static: bool = True
+    music_port: int = 3012
+    music_bridge: str = "1"
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
@@ -58,6 +64,9 @@ class RangeHandler(SimpleHTTPRequestHandler):
     # ------------------------------------------------------------ 方法分派
 
     def do_GET(self) -> None:
+        if self.static and _MUSIC_MEDIA_RE.fullmatch(self.path):
+            self._music_media()
+            return
         if self.api and self.api.handle(self, "GET"):
             return
         if not self.static:
@@ -66,6 +75,9 @@ class RangeHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_HEAD(self) -> None:
+        if self.static and _MUSIC_MEDIA_RE.fullmatch(self.path):
+            self._music_media()
+            return
         if self.api and self.api.handle(self, "HEAD"):
             return
         if not self.static:
@@ -77,7 +89,86 @@ class RangeHandler(SimpleHTTPRequestHandler):
         self._api_only("OPTIONS")
 
     def do_POST(self) -> None:
+        resource = MODEL_ROUTES.get(self.path)
+        if self.static and resource and _is_loopback(self.server.server_address[0]):
+            forward_model_request(self, resource)
+            return
+        if self.static and self.path.startswith("/music/"):
+            self._music()
+            return
         self._api_only("POST")
+
+    def _music(self) -> None:
+        host = self.headers.get("Host", "")
+        origin = self.headers.get("Origin", "")
+        if (not re.fullmatch(r"(localhost|127\.0\.0\.1)(:\d+)?", host)
+                or origin != "http://" + host
+                or self.headers.get_content_type() != "application/json"):
+            self.send_error(403)
+            return
+        actions = {"account", "qr", "poll", "logout", "retention", "search", "likes", "folders",
+                   "playlist", "lyrics", "source", "artwork"} | _MUSIC_CACHE_ACTIONS
+        action = self.path.removeprefix("/music/")
+        length = self.headers.get("Content-Length", "")
+        if action not in actions or not length.isdigit() or not 0 < int(length) <= 4096:
+            self.send_error(400)
+            return
+        if action in _MUSIC_CACHE_ACTIONS and not _is_loopback(self.server.server_address[0]):
+            self.send_error(403)
+            return
+        service = HTTPConnection("127.0.0.1", self.music_port, timeout=20)
+        try:
+            service.request("POST", "/" + action, self.rfile.read(int(length)),
+                            {"Content-Type": "application/json", "X-UtaLoop": self.music_bridge,
+                             "Cookie": self.headers.get("Cookie", "")})
+            upstream = service.getresponse()
+            data = upstream.read()
+            self.send_response(upstream.status)
+            cookie = upstream.getheader("Set-Cookie")
+            if cookie:
+                self.send_header("Set-Cookie", cookie)
+        except (OSError, HTTPException):
+            self.send_response(503)
+            data = json.dumps({"error": "请启动 UtaLoop 音乐服务后重试"}).encode()
+        finally:
+            service.close()
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _music_media(self) -> None:
+        host = self.headers.get("Host", "")
+        if (not _is_loopback(self.server.server_address[0])
+                or not re.fullmatch(r"(localhost|127\.0\.0\.1)(:\d+)?", host)
+                or self.headers.get("Origin") not in (None, "http://" + host)
+                or self.headers.get("Sec-Fetch-Site") not in (None, "same-origin", "none")):
+            self.send_error(403)
+            return
+        headers = {"X-UtaLoop": self.music_bridge, "Cookie": self.headers.get("Cookie", "")}
+        if self.headers.get("Range"):
+            headers["Range"] = self.headers["Range"]
+        service = HTTPConnection("127.0.0.1", self.music_port, timeout=20)
+        started = False
+        try:
+            service.request(self.command, self.path.removeprefix("/music"), headers=headers)
+            upstream = service.getresponse()
+            self.send_response(upstream.status)
+            for name in ("Content-Type", "Content-Length", "Content-Range", "Location"):
+                value = upstream.getheader(name)
+                if value is not None:
+                    self.send_header(name, value)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            started = True
+            self.end_headers()
+            if self.command == "GET":
+                while chunk := upstream.read1(64 * 1024):
+                    self.wfile.write(chunk)
+        except (OSError, HTTPException):
+            if not started:
+                self.send_error(503, "Music service unavailable")
+        finally:
+            service.close()
 
     def do_PUT(self) -> None:
         self._api_only("PUT")

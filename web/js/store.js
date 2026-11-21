@@ -21,7 +21,7 @@
  */
 
 const DB_NAME = 'linguatrack';
-const DB_VER = 6;
+const DB_VER = 7;
 const STALL_MS = 15000;            // 事务这么久没有进展就放弃 (只在页面可见时计时)
 const READ_FAIL = '本地数据读取失败，请重试';
 const WRITE_FAIL = '本地数据保存失败，请重试';
@@ -32,7 +32,7 @@ export const CACHE_STORES = ['tr', 'word', 'chat', 'kv'];
 export const LIB_STORES = ['tracks', 'audio', 'audioChunks', 'data', 'transcripts'];
 /** 收藏是独立的用户资产, 删除源媒体或清缓存时保留。 */
 // Downloadable voices are device assets, independent of lessons, caches and JSON backups.
-export const STORES = [...CACHE_STORES, ...LIB_STORES, 'favorites', 'voicePacks', 'voicePackMeta'];
+export const STORES = [...CACHE_STORES, ...LIB_STORES, 'favorites', 'voicePacks', 'voicePackMeta', 'study'];
 
 const mem = new Map(STORES.map((s) => [s, new Map()]));
 let degraded = false;
@@ -43,9 +43,15 @@ const REPLAY = Symbol('replay');   // 事务被页面冻结打断, 恢复后重�
 
 export const isDegraded = () => degraded;
 
-function busy() {
-  const error = new Error('本地存储暂时没有响应，请稍后重试');
+function busy(message = '本地存储暂时没有响应，请稍后重试') {
+  const error = new Error(message);
   error.name = 'StoreBusyError';
+  return error;
+}
+
+function incompatible(message, cause) {
+  const error = new Error(message, { cause });
+  error.name = 'StoreCompatibilityError';
   return error;
 }
 // ---------------------------------------------------------------- 页面生命周期
@@ -128,14 +134,23 @@ function connect() {
   const startedAt = epoch;
   const attempt = new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') { reject(new Error('no indexedDB')); return; }
-    let request, abandoned = false;
+    let request, abandoned = false, blocked = false, upgrading = false;
     try { request = indexedDB.open(DB_NAME, DB_VER); }
     catch (error) { reject(error); return; }
     // 被其他页面的旧连接挡住 (blocked) 时继续等待, 超时才放弃, 不再当成存储不可用。
-    const dog = watchdog(STALL_MS, () => { abandoned = true; reject(busy()); });
+    const dog = watchdog(STALL_MS, () => {
+      abandoned = true;
+      try { request.transaction?.abort(); } catch { /* The upgrade may already be committing. */ }
+      reject(busy(blocked ? '请关闭其他 UtaLoop 标签页后重试数据升级' : undefined));
+    });
+    request.onblocked = () => { blocked = true; };
     request.onupgradeneeded = () => {
+      upgrading = true;
+      blocked = false;
+      if (abandoned) { request.transaction.abort(); return; }
+      dog.poke();
       const db = request.result;
-      // 升级只新增 store: v2 音频库, v3 字幕原件, v4 音频分块, v5 收藏。
+      // Versions 2–7 added stores without rewriting any existing records.
       for (const name of STORES) {
         if (db.objectStoreNames.contains(name)) continue;
         const os = db.createObjectStore(name);
@@ -153,12 +168,21 @@ function connect() {
       if (conn === attempt) current = db;
       resolve(db);
     };
-    request.onerror = () => { dog.stop(); reject(request.error || new Error('open failed')); };
+    request.onerror = () => {
+      dog.stop();
+      const error = request.error || new Error('open failed');
+      if (error.name === 'VersionError') {
+        reject(incompatible('本地数据由较新版本写入，请用最新版 UtaLoop 打开', error));
+      } else if (upgrading) {
+        reject(incompatible('本地数据升级未完成，请刷新页面后重试', error));
+      } else reject(error);
+    };
   });
   conn = attempt;
   attempt.catch((error) => {
     if (conn === attempt) conn = null;
-    if (!opened && startedAt === epoch && error?.name !== 'StoreBusyError') degraded = true;
+    if (!opened && startedAt === epoch && !['StoreBusyError', 'StoreCompatibilityError'].includes(error?.name))
+      degraded = true;
   });
   return attempt;
 }
@@ -469,14 +493,14 @@ export async function updateRecord(store, key, change, { timeoutMs = STALL_MS } 
 /** 原子地新增、修改或删除用户记录。change(null) 表示未命中, 返回 null 表示删除。
  * 与缓存 put/del 不同, 等待事务提交并把失败交给界面处理。
  */
-export async function mutateRecord(store, key, change) {
+export async function mutateRecord(store, key, change, { track } = {}) {
   const out = await transact(store, 'readwrite', (t, ctx) => {
     const os = t.objectStore(store);
     let next;
     ctx.request(os.get(key), (row) => {
       next = change(row?.v ?? null);
       if (next === null) { if (row) ctx.request(os.delete(key)); }
-      else if (next !== row?.v) ctx.request(os.put({ v: next, track: next.track || '', at: Date.now() }, key));
+      else if (next !== row?.v) ctx.request(os.put({ v: next, track: track ?? (next.track || ''), at: Date.now() }, key));
     });
     return () => next;
   }, { fallback: WRITE_FAIL });
@@ -491,7 +515,7 @@ export async function mutateRecord(store, key, change) {
 export const wipeTrack = (track) => removeTrackData(track, CACHE_STORES);
 
 /** 删掉某条音频的全部数据 (音频 / 分析结果 / 元数据 / 缓存). */
-export const wipeTrackAll = (track) => removeTrackData(track, [...CACHE_STORES, ...LIB_STORES]);
+export const wipeTrackAll = (track) => removeTrackData(track, [...CACHE_STORES, ...LIB_STORES, 'study']);
 
 async function removeTrackData(track, stores) {
   if (!track) return 0;

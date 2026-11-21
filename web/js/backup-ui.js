@@ -29,7 +29,7 @@ function feedback() {
 export function openBackupExport() {
   const body = el('div', 'pane transfer');
   const note = feedback();
-  let includeCredentials = true;
+  let includeCredentials = false;
   const credentials = switchRow('包含 API Key 与访问令牌', '明文写入备份文件',
     () => includeCredentials, (v) => { includeCredentials = !!v; });
   const save = button('导出 JSON', { main: true, glyph: 'i-doc', onPick: async () => {
@@ -39,14 +39,14 @@ export function openBackupExport() {
     try {
       const backup = await exportBackup({ includeCredentials });
       await saveFile(new Blob([JSON.stringify(backup)], { type: 'application/json' }),
-        'lingua-backup-' + backup.exportedAt.replace(/[:.]/g, '-') + '.json');
+        'UtaLoop-backup-' + backup.exportedAt.replace(/[:.]/g, '-') + '.json');
       const summary = backupSummary(backup);
-      note.textContent = `已导出 ${summary.tracks} 条媒体记录、${summary.analyses} 份分析结果、${summary.favorites} 条收藏和 ${summary.llm} 条模型缓存`;
+      note.textContent = `已导出 ${summary.tracks} 条媒体记录、${summary.study} 条学习记录和 ${summary.favorites} 条收藏`;
     } catch (err) { note.textContent = '导出失败：' + errorText(err); }
     finally { save.disabled = false; credentials.querySelector('button').disabled = false; }
   } });
   body.append(group(
-    infoRow('备份内容', '配置、媒体记录、分析结果、收藏、模型缓存'),
+    infoRow('备份内容', '配置、媒体记录、歌词与注音、学习进度、收藏、模型缓存'),
     infoRow('媒体与字幕文件', '仅保存文件名，不含原文件'), credentials,
   ), buttonBar(save), note);
   openSheet('导出数据', body);
@@ -60,7 +60,7 @@ export function openBackupImport() {
   const preview = el('div');
   const name = el('p', 'transfer-filename', '未选择备份文件');
   let backup = null, restoreConfig = true, selection = 0;
-  const configRow = switchRow('使用备份中的全局配置', '替换当前模型、提示词与显示偏好',
+  const configRow = switchRow('使用备份中的全局配置', '替换当前模型服务商与显示偏好',
     () => restoreConfig, (v) => { restoreConfig = !!v; });
   const choose = button('选择备份', { glyph: 'i-doc', onPick: () => input.click() });
   const restore = button('导入数据', { main: true, glyph: 'i-upload', onPick: async () => {
@@ -108,9 +108,10 @@ export function openBackupImport() {
         infoRow('分析结果', `${summary.analyses} 份`),
         infoRow('模型缓存', `${summary.llm} 条`),
         infoRow('收藏', `${summary.favorites} 条`),
+        infoRow('学习记录', `${summary.study} 条`),
         infoRow('重复媒体', copies ? `${copies} 条保存为副本` : '无'),
-        infoRow('待补充文件', `${summary.tracks} 个媒体文件、${parsed.stores.tracks.filter((r) => r.value.transcript).length} 个字幕文件`),
-        infoRow('API Key 与访问令牌', parsed.includesCredentials ? '包含在备份中' : '保留本机凭据'),
+        infoRow('待补充文件', `${summary.mediaFiles} 个媒体文件、${parsed.stores.tracks.filter((r) => r.value.transcript).length} 个字幕文件`),
+        infoRow('API Key 与访问令牌', parsed.includesCredentials ? '包含在备份中' : '保留匹配接口的本机凭据'),
       ));
       note.textContent = '';
       restore.disabled = false;

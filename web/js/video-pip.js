@@ -134,7 +134,7 @@ export function setupVideoPip({ video, stage, app, engine, releaseLandscape, onL
     }
     const computed = getComputedStyle(document.documentElement);
     for (const [from, to] of [['--fs-text', '--pip-fs-text'], ['--fs-tr', '--pip-fs-tr'],
-      ['--font-text', '--pip-font-text']]) {
+      ['--font-text', '--pip-font-text'], ['--font-translation', '--pip-font-translation']]) {
       root.style.setProperty(to, computed.getPropertyValue(from).trim());
     }
   };
@@ -222,7 +222,7 @@ export function setupVideoPip({ video, stage, app, engine, releaseLandscape, onL
       style.textContent = css;
       doc.head.appendChild(style);
     } else {   // 取不到就退回外链, 至少 base.css 的变量还在
-      for (const href of ['css/base.css', 'css/video-pip.css']) {
+      for (const href of ['css/typography.css', 'css/base.css', 'css/video-pip.css']) {
         const link = doc.createElement('link');
         link.rel = 'stylesheet';
         link.href = new URL(href, document.baseURI).href;
@@ -237,7 +237,7 @@ export function setupVideoPip({ video, stage, app, engine, releaseLandscape, onL
     win.addEventListener('pagehide', unmountDocument);
     observer = new MutationObserver(() => { syncSkin(); paint(true); });
     observer.observe(document.documentElement, { attributes: true,
-      attributeFilter: ['data-theme', 'data-lang', 'data-space', 'data-tr'] });
+      attributeFilter: ['data-theme', 'data-lang', 'data-translation-lang', 'data-space', 'data-tr'] });
     syncSkin();
     paint(true);
   }

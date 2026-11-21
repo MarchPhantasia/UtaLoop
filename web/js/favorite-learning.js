@@ -1,5 +1,5 @@
 /** 收藏的学习快照与现有缓存。只读取已有内容, 不触发模型请求。 */
-import { get } from './store.js';
+import { get, getMany } from './store.js';
 import { hash53 } from './util.js';
 import { Track } from './track.js';
 
@@ -52,6 +52,29 @@ export function validateLearning(value) {
 export const favoriteWordKey = (track, lang, i, j, word, text) =>
   `${track}|${lang}|${i}|${j}|${hash53(word + '\u0001' + text)}`;
 
+/** Keep the same spelling occurrence when edits change neighboring word boundaries. */
+export function wordMeaningKeys(track, lang, i, j, sentence) {
+  const word = sentence.words[j].text;
+  const legacy = favoriteWordKey(track, lang, i, j, word, sentence.text);
+  let end = 0;
+  for (let k = 0; k <= j; k++) {
+    const text = sentence.words[k].text;
+    const start = sentence.text.indexOf(text, end);
+    if (start < 0 || sentence.text.slice(end, start).trim()) return [legacy];
+    end = start + text.length;
+  }
+  return [favoriteWordKey(track, lang, i, 'at:' + (end - word.length), word, sentence.text), legacy];
+}
+
+export const hasWordMeaning = value => ['gloss', 'note'].some(key =>
+  typeof value?.[key] === 'string' && value[key].trim());
+
+export async function cachedWordMeaning(keys, options) {
+  const hits = await getMany('word', keys, new Map(), options);
+  const key = keys.find(candidate => hasWordMeaning(hits.get(candidate)));
+  return key ? { key, meaning: hits.get(key) } : null;
+}
+
 export function favoriteLocation(f, track) {
   const matches = track.sentences.map((s, i) => ({ s, i })).filter(({ s }) => clean(s.text) === f.context);
   matches.sort((a, b) => Math.abs(a.s.start - f.start) - Math.abs(b.s.start - f.start));
@@ -91,11 +114,15 @@ export async function readFavoriteContent(f) {
   const track = data ? Track.fromData(data) : null;
   const location = track ? favoriteLocation(f, track) : null;
   const i = location?.i ?? f.sentence, j = location?.j ?? f.word;
-  const [meaning, chat, translation] = await Promise.all([
-    f.kind === 'word' && j >= 0 ? get('word', favoriteWordKey(f.track, f.targetLang, i, j, f.text, f.context)) : null,
+  let keys = [];
+  if (f.kind === 'word' && j >= 0) keys = location?.w ? wordMeaningKeys(f.track, f.targetLang, i, j, location.s)
+    : [favoriteWordKey(f.track, f.targetLang, i, j, f.text, f.context)];
+  const [cached, chat, translation] = await Promise.all([
+    cachedWordMeaning(keys),
     location ? get('chat', `${f.track}|${i}`) : null,
     get('tr', `${f.track}|${f.targetLang}|${hash53(f.context)}`),
   ]);
+  const meaning = cached?.meaning;
   const s = location?.s || { words: [] }, w = location?.w;
   const learning = learningSnapshot(s, f.kind === 'word' ? (w || {}) : null, meaning || {}, (pos) => track?.posLabel(pos) || pos || '');
   learning.explanations = explanationSnapshot(chat, f.context);
