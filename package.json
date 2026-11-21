@@ -1,7 +1,7 @@
 {
-  "name": "lingua",
+  "name": "utaloop",
   "version": "1.1.0",
-  "description": "Lingua web and native mobile shell",
+  "description": "UtaLoop Japanese song practice player",
   "scripts": {
     "test": "node --test tests/test_*.mjs",
     "version": "node mobile/scripts/version.mjs && git add web/js/version.js",
@@ -17,16 +17,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RzMY/Lingua.git"
+    "url": "git+https://github.com/MarchPhantasia/UtaLoop.git"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "type": "module",
-  "bugs": {
-    "url": "https://github.com/RzMY/Lingua/issues"
-  },
-  "homepage": "https://github.com/RzMY/Lingua#readme",
+  "homepage": "https://github.com/MarchPhantasia/UtaLoop#readme",
   "dependencies": {
     "@capacitor/android": "8.5.2",
     "@capacitor/app": "8.1.1",

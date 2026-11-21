@@ -190,7 +190,7 @@ function showSetup(onBack = null) {
   $('checkpointControls').hidden = true;
   const title = record.title || record.id;
   dom.trackTitle.textContent = title;
-  document.title = title + ' · Lingua';
+  document.title = title + ' · UtaLoop';
 
   const box = dom.setup;
   box.textContent = '';

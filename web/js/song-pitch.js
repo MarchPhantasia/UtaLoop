@@ -8,7 +8,8 @@ async function loadProcessor(context) {
     const { default: createStretch } = await import('./vendor/signalsmith/SignalsmithStretch.mjs');
     createStretch.moduleUrl = new URL('./vendor/signalsmith/SignalsmithStretch.mjs', import.meta.url).href;
     const processor = await createStretch(context);
-    await processor.configure({ blockMs: 64, intervalMs: 16, splitComputation: true });
+    // More overlapping analysis windows reduce tuning error on sustained notes.
+    await processor.configure({ blockMs: 88, intervalMs: 11, splitComputation: true });
     return { processor, latency: await processor.latency() };
   }
   try {

@@ -243,7 +243,7 @@ export function setupMediaSession({ audio, engine, beforePlay }) {
       if (!ms) return;
       try {
         if (typeof window.MediaMetadata === 'function') {
-          ms.metadata = new window.MediaMetadata({ title: track.title, artist: 'Lingua' });
+          ms.metadata = new window.MediaMetadata({ title: track.title, artist: 'UtaLoop' });
         }
       } catch { /* 元数据不受支持时仍保留播放控制 */ }
       sync();

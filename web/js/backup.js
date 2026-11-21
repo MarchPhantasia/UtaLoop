@@ -253,7 +253,7 @@ function validateStudy(row) {
 
 /** Validate the entire archive before any persistent writes or preview actions. */
 export function validateBackup(backup) {
-  require(object(backup) && backup.format === BACKUP_FORMAT, '不是 Lingua 用户数据备份');
+  require(object(backup) && backup.format === BACKUP_FORMAT, '请选择 UtaLoop 数据备份文件');
   const names = BACKUP_LAYOUTS.get(backup.version);
   require(names, '备份版本不受支持，请更新应用');
   require(typeof backup.exportedAt === 'string' && Number.isFinite(Date.parse(backup.exportedAt)), '导出时间错误');

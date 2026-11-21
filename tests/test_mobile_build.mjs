@@ -136,11 +136,12 @@ test('GitHub workflow exposes Android, signed iOS and update artifacts with no c
   assert.deepEqual(Object.keys(workflow.jobs), ['frontend', 'android', 'ios', 'publish']);
   for (const name of ['frontend', 'android', 'ios']) assert.ok(workflow.jobs[name].steps.some((s) => s.uses === 'actions/upload-artifact@v4'));
   assert.equal(workflow.on.release, undefined);
-  assert.deepEqual(workflow.on.push.branches, ['main']);
+  assert.equal(workflow.on.push.branches, undefined);
   assert.deepEqual(workflow.on.push.tags, ['v*']);
   assert.equal(workflow.jobs.publish.permissions.contents, 'write');
   assert.deepEqual(workflow.jobs.publish.needs, ['frontend', 'android', 'ios']);
   assert.match(workflow.jobs.publish.if, /pull_request/);
+  assert.ok(!workflow.jobs.publish.if.includes('refs/heads/main'));
   const androidSetup = workflow.jobs.android.steps.find((s) => s.uses === 'android-actions/setup-android@v3');
   assert.doesNotMatch(androidSetup.with.packages, /(?:^|\s)tools(?:\s|$)/);
   assert.match(androidSetup.with.packages, /platforms;android-36/);

@@ -1,7 +1,8 @@
 {
   "id": "./",
-  "name": "Lingua",
-  "short_name": "Lingua",
+  "name": "UtaLoop",
+  "short_name": "UtaLoop",
+  "description": "日语歌曲跟唱练习",
   "lang": "zh-CN",
   "start_url": "./index.html",
   "scope": "./",

@@ -112,7 +112,8 @@ html[data-song-lyrics] {
   --h-bar: 0px;
   --gap-bar: 2px;
   --lyric-word-lift: -1px;
-  --lyric-focus-a: 44%;
+  --chip-a: 31%;
+  --lyric-focus-a: 51%;
   --lh-tr: calc(var(--fs-tr) * 1.5);
 }
 .s.no-inline-reading { --read-row: 0px; }
@@ -257,7 +258,7 @@ html[data-song-lyrics] .s.is-active .w::after { opacity: var(--chip-a); }
 html[data-song-lyrics] .w.is-cur .w-text,
 html[data-song-lyrics] .w.is-cur::after { transform: translateY(var(--lyric-word-lift)); }
 html[data-song-lyrics] .s.is-active .w.is-cur::after { opacity: var(--lyric-focus-a); }
-html[data-song-lyrics][data-theme="dark"] { --lyric-focus-a: 31%; }
+html[data-song-lyrics][data-theme="dark"] { --chip-a: 34%; --lyric-focus-a: 43%; }
 
 @media (prefers-reduced-motion: reduce) {
   html[data-song-lyrics] { --lyric-word-lift: 0px; }
@@ -278,32 +279,29 @@ html[data-song-lyrics][data-theme="dark"] { --lyric-focus-a: 31%; }
 
 /* ---------------------------------------------------------------- 词性配色 */
 
-/*  每个词性只声明一个色相 --pc; 底色由 color-mix 按主题调透明度得出,
-    这样浅色/深色主题共用一套配色, 也方便自定义。
-    底色刻意压得很淡 (照 img/播放页面.png): 记号条才是词性的主色,
-    圆角底只负责把一个词圈出来, 太重会盖掉正文。                    */
+/* 图例、歌词词块和逐词面板共用词性主色，底色浓度按显示场景调整。 */
 :root { --chip-a: 19%; --pc: var(--ink-4); }
 html[data-theme="dark"] { --chip-a: 22%; }
 
-.p-noun     { --pc: #f0cf4b; }
-.p-propn    { --pc: #e6ad3c; }
-.p-num      { --pc: #efbe63; }
-.p-pron     { --pc: #5ec4cb; }
-.p-verb     { --pc: #8bce62; }
-.p-adj      { --pc: #f5a05c; }
-.p-adjn     { --pc: #b492e6; }
-.p-adv      { --pc: #86ade9; }
-.p-adnom    { --pc: #7ba6dd; }
-.p-det      { --pc: #b0bcd6; }
-.p-conj     { --pc: #a6b3c3; }
-.p-interj   { --pc: #ee8b79; }
-.p-particle { --pc: #6fd2d7; }
-.p-prep     { --pc: #59c1d8; }
-.p-aux      { --pc: #f292b3; }
-.p-prefix   { --pc: #c3cbb1; }
-.p-suffix   { --pc: #c3cbb1; }
-.p-fill     { --pc: #c6c8bf; }
-.p-other    { --pc: #c6c8bf; }
+.p-noun     { --pc: #c69c15; }
+.p-propn    { --pc: #a24a37; }
+.p-num      { --pc: #9751cc; }
+.p-pron     { --pc: #1d83c6; }
+.p-verb     { --pc: #23924d; }
+.p-adj      { --pc: #dc6726; }
+.p-adjn     { --pc: #704097; }
+.p-adv      { --pc: #5159c7; }
+.p-adnom    { --pc: #83a029; }
+.p-det      { --pc: #487193; }
+.p-conj     { --pc: #57677c; }
+.p-interj   { --pc: #d93f54; }
+.p-particle { --pc: #12978d; }
+.p-prep     { --pc: #3ea7b9; }
+.p-aux      { --pc: #c33b96; }
+.p-prefix   { --pc: #3a725d; }
+.p-suffix   { --pc: #9b7455; }
+.p-fill     { --pc: #ac829b; }
+.p-other    { --pc: #9ba4b1; }
 
 /* 关闭词性上色: 统一成中性色, 仍保留卡拉OK 进度 */
 html[data-pos="0"] .w { --pc: var(--ink-4) !important; }

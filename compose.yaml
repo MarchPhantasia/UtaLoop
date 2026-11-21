@@ -1,6 +1,6 @@
 services:
   lingua:
-    image: ${LINGUA_IMAGE:-ghcr.io/rzmy/lingua:latest}
+    image: ${LINGUA_IMAGE:-utaloop:local}
     build:
       context: .
     ports:
