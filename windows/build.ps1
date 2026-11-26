@@ -75,7 +75,7 @@ foreach ($Directory in @('assets','css','icons','js')) {
   Copy-Item -LiteralPath (Join-Path $Root "web\$Directory") -Destination $Web -Recurse
 }
 Copy-Item -LiteralPath (Join-Path $Web 'favicon.ico') -Destination (Join-Path $Build 'web')
-foreach ($File in @('Program.cs','DesktopServices.cs','UtaLoop.Desktop.csproj','App.config','app.manifest')) {
+foreach ($File in @('Program.cs','DesktopAudio.cs','DesktopServices.cs','UtaLoop.Desktop.csproj','App.config','app.manifest')) {
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot $File) -Destination $Project
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'serve_desktop.py') -Destination $Payload

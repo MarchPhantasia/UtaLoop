@@ -8,6 +8,7 @@ import { downloadedVoices, supportsVoicePacks, synthesizeVoicePack } from './voi
 import { packId } from './voice-pack-catalog.js';
 import { normalizedSpeechPCM, speechPCMBase64 } from './speech-pcm.js';
 import { preparePronunciationPlayback } from './playback-session.js';
+import { activeDesktopAudioOutput } from './desktop-audio.js';
 
 // WebKit cancellation reaches the platform synthesizer asynchronously. Share
 // the recovery window across cards/previews, which all use the same synthesizer.
@@ -131,13 +132,19 @@ export function createPronunciation({ track, sentence, word, audioRange, lyricOf
           const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
           if (!supportsVoicePacks()) throw Error('当前环境不支持本地语音包，请选择系统音色');
           const nativePCM = nativeApp()?.speechPCM ? nativeApp().speechAudio : null;
-          const context = nativePCM ? null : new Context();
+          const output = nativePCM ? null : activeDesktopAudioOutput();
+          const context = nativePCM ? null : (output?.context ?? new Context());
           const controller = new AbortController();
           let node, timeout;
           cleanup = () => {
             clearTimeout(timeout); controller.abort();
-            if (node) { node.onended = null; try { node.stop(); } catch {} node.disconnect(); }
-            if (context) void context.close().catch(() => {});
+            if (node) {
+              if (node.onended) output?.flush();
+              node.onended = null;
+              try { node.stop(); } catch {}
+              node.disconnect();
+            }
+            if (context && !output) void context.close().catch(() => {});
           };
           // Observe resume's rejection immediately, even if inference hasn't completed.
           const resumed = context ? Promise.resolve(context.resume()) : Promise.resolve();
@@ -175,8 +182,9 @@ export function createPronunciation({ track, sentence, word, audioRange, lyricOf
           preparePronunciationPlayback();
           const buffer = context.createBuffer(1, samples.length, rendered.sampleRate);
           buffer.copyToChannel(samples, 0);
-          node = context.createBufferSource(); node.buffer = buffer; node.connect(context.destination);
-          node.onended = () => finish();
+          node = context.createBufferSource(); node.buffer = buffer;
+          node.connect(output?.destination ?? context.destination);
+          node.onended = () => { node.onended = null; finish(); };
           node.start(); publish('playing', source);
           return;
         }
@@ -279,6 +287,12 @@ export function createPronunciation({ track, sentence, word, audioRange, lyricOf
       const media = document.createElement('audio');
       media.hidden = true;
       media.setAttribute('playsinline', '');
+      const output = activeDesktopAudioOutput();
+      const mediaNode = output?.context.createMediaElementSource(media);
+      if (output) {
+        media.crossOrigin = 'anonymous';
+        mediaNode.connect(output.destination);
+      }
       document.body.append(media);
       const range = rangeFor(track.duration);
       let stopTimer = 0, loadTimer = 0, ready = false, positioned = false;
@@ -291,6 +305,8 @@ export function createPronunciation({ track, sentence, word, audioRange, lyricOf
       cleanup = () => {
         clearTimeout(stopTimer); clearTimeout(loadTimer);
         for (const [event, fn] of listeners) media.removeEventListener(event, fn);
+        if (!media.ended) output?.flush();
+        mediaNode?.disconnect();
         media.pause(); media.removeAttribute('src'); media.load();
         media.remove();
         if (ownedURL) URL.revokeObjectURL(ownedURL);
@@ -339,6 +355,7 @@ export function createPronunciation({ track, sentence, word, audioRange, lyricOf
       media.load();
       // 在用户点击的调用栈内 play, 不等 loadedmetadata/seeked 才请求播放权限。
       preparePronunciationPlayback();
+      output?.resume();
       Promise.resolve(media.play()).catch((error) => finish(error?.name === 'NotAllowedError'
         ? '浏览器阻止了发音，请再次点击「音频」' : '音频片段播放失败，请重试'));
     } catch (error) {

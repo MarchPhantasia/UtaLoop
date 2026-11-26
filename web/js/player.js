@@ -27,19 +27,19 @@ export function resumeAt(position, duration) {
  * rAF 循环), 回调里也只有一个比较和偶尔一次写库. 离开页面时的那一次另经 `stage`
  * 同步暂存, 进程被直接杀掉才可能丢最后 5 秒。
  */
-export function createProgressSaver(audio, save, stage) {
+export function createProgressSaver(audio, save, stage, canSave = () => true) {
   let id = '', written = -1, lastAt = -Infinity;
   // 切后台 / 离开页面: 先同步暂存 (见 library.stagePosition), 再照常写库。页面可能
   // 随即被销毁或冻结, 那次事务不一定来得及提交。
   const leave = () => {
-    if (id && stage) {
+    if (id && stage && canSave()) {
       try { stage(id, audio.ended ? 0 : Math.max(0, Number(audio.currentTime) || 0)); }
       catch { /* 暂存失败时仍尝试写库 */ }
     }
     write(true);
   };
   const write = (force) => {
-    if (!id) return;
+    if (!id || !canSave()) return;
     const seconds = audio.ended ? 0 : Math.max(0, Number(audio.currentTime) || 0);
     const now = performance.now();
     if (!force && now - lastAt < SAVE_EVERY) return;
@@ -89,7 +89,7 @@ export function setupPlayer(ctx) {
   const overlays = createOverlayPlayback(audio, media);
   window.addEventListener('pagehide', overlays.reset);
   // 没传写库回调 (某些测试 / 只读场景) 就不记进度, 播放本身不受影响
-  const progress = ctx.savePosition ? createProgressSaver(audio, ctx.savePosition, ctx.stagePosition) : null;
+  const progress = ctx.savePosition ? createProgressSaver(audio, ctx.savePosition, ctx.stagePosition, ctx.canSavePosition) : null;
   let currentId = '';
 
   audio.addEventListener('play', () => {
@@ -122,7 +122,7 @@ export function setupPlayer(ctx) {
     }
   });
   audio.addEventListener('error', () => {
-    if (!audio.src) return;                 // 还没挂上音频, 不是错误
+    if (!audio.src || ctx.onMediaError?.()) return;
     toast(errorMessage(audio.error, '媒体加载失败，请检查文件格式或重新导入'));
   });
 
@@ -162,7 +162,7 @@ export function setupPlayer(ctx) {
 }
 
 /** 系统控制与页面按钮共用同一个 audio, 状态通过媒体事件同步。 */
-export function setupMediaSession({ audio, engine, beforePlay }) {
+export function setupMediaSession({ audio, engine, beforePlay, canPlay, onMediaError }) {
   // The native player owns lock-screen commands and Now Playing while WKWebView is suspended.
   const ms = audio.nativeAudio ? null : navigator.mediaSession;
   let playRequest = 0;
@@ -190,6 +190,7 @@ export function setupMediaSession({ audio, engine, beforePlay }) {
   };
 
   const play = async () => {
+    if (canPlay && !canPlay()) return;
     const request = ++playRequest;
     const source = audio.src;
     try {
@@ -201,7 +202,9 @@ export function setupMediaSession({ audio, engine, beforePlay }) {
     } catch (err) {
       if (request !== playRequest || source !== audio.src) return;
       sync();
-      if (err?.name !== 'AbortError') toast(errorMessage(err, '播放失败，请重试'));
+      if (err?.name !== 'AbortError' && !(audio.error && onMediaError)) {
+        toast(errorMessage(err, '播放失败，请重试'));
+      }
     }
   };
   const pause = () => {

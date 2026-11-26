@@ -29,14 +29,20 @@ function fade(gain, level, now, start) {
   gain.linearRampToValueAtTime(level, start + FADE_SECONDS);
 }
 
-/** Reroute the original media element only after the live pitch processor is ready. */
-export function createSongPitch(media) {
+/** Attach the pitch processor when needed, sharing the desktop output's media source. */
+export function createSongPitch(media, output) {
   const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
   if (!globalThis.isSecureContext || !Context || !globalThis.AudioWorkletNode) return null;
 
   const events = new EventTarget();
   const changed = () => events.dispatchEvent(new Event('change'));
-  let context, graph, source, preparing;
+  let context = output?.context, graph, source, preparing;
+  const direct = output ? context.createGain() : null;
+  if (direct) {
+    source = context.createMediaElementSource(media);
+    source.connect(direct);
+    direct.connect(output.destination);
+  }
   let wanted = 0, applied = 0, wetConnected = false, failed = false;
   let mixAt = 0, releaseTimer = 0;
 
@@ -99,15 +105,17 @@ export function createSongPitch(media) {
 
   async function prepare() {
     const { processor, latency } = await loadProcessor(context);
-    const dry = context.createGain(), wet = context.createGain();
+    const dry = direct || context.createGain(), wet = context.createGain();
     wet.gain.value = 0;
-    dry.connect(context.destination);
-    wet.connect(context.destination);
+    if (!direct) dry.connect(context.destination);
+    wet.connect(output?.destination || context.destination);
     processor.addEventListener('processorerror', onFailure);
     graph = { processor, latency, dry, wet };
   }
 
   function activate() {
+    output?.resume();
+    if (output && (!wanted || failed)) return;
     if ((!wanted || failed) && !source) return;
     try {
       context ||= new Context({ latencyHint: 'interactive' });

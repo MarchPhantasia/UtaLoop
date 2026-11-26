@@ -4,7 +4,7 @@ const rowHeight = 68;
 
 // Each page occupies its original positions, even when a song is unavailable.
 export function mountMusicList({ viewport, results, more, local, load, row, report, meta, signal, position = 0, animate = true, remember }) {
-  const pages = new Map(), pending = new Set(), failed = new Set(), mounted = new Map();
+  const pages = new Map(), loaded = new Set(), pending = new Set(), failed = new Set(), mounted = new Map();
   let total = local?.length ?? 0, next = 0, hasMore = false, frame = 0;
   let restore = position;
   let indexed = false, lastScroll = -Infinity;
@@ -26,7 +26,7 @@ export function mountMusicList({ viewport, results, more, local, load, row, repo
       node.dataset.index = index;
       results.insertBefore(node, following || null);
       mounted.set(index, node);
-      if (!local && !pages.has(page) && !failed.has(page)) void fetchPage(page);
+      if (!local && !loaded.has(page) && !failed.has(page)) void fetchPage(page);
     }
     if (hasMore && last >= total - 2 && !failed.has(next)) void fetchPage(next);
   }
@@ -38,15 +38,25 @@ export function mountMusicList({ viewport, results, more, local, load, row, repo
       if (!hasMore || viewport.scrollTop >= restore - 1) restore = 0;
     }
     windowRows(animate && reveal && !position);
-    more.hidden = !hasMore && !failed.size;
-    more.textContent = failed.size ? '重新加载' : '加载更多';
     meta(total, hasMore);
   }
 
+  function retryPage() {
+    const visible = Math.floor(viewport.scrollTop / (rowHeight * size));
+    return failed.has(visible) ? visible : failed.values().next().value ?? next;
+  }
+
+  function updateMore() {
+    more.hidden = !hasMore && !failed.size;
+    more.disabled = pending.has(retryPage());
+    more.textContent = failed.size ? '重试加载歌曲' : '加载更多';
+  }
+
   async function fetchPage(page) {
-    if (pending.has(page) || pages.has(page) || signal.aborted) return;
+    if (pending.has(page) || loaded.has(page) || signal.aborted) return;
     pending.add(page);
     if (failed.has(page)) report('正在读取…');
+    updateMore();
     results.setAttribute('aria-busy', 'true');
     // Unknown totals (search or the first request) have no virtual slots yet.
     // Reserve just a few rows without inventing a song count or scroll offset.
@@ -63,10 +73,13 @@ export function mountMusicList({ viewport, results, more, local, load, row, repo
     try {
       const data = await load(page * size, size);
       if (signal.aborted) return;
+      if (!Array.isArray(data?.items)) throw Error('暂时无法读取曲目，请重试');
+      loaded.add(page);
       // Search and folder pages may contain fewer visible rows after filtering.
       if (Number.isInteger(data.total)) {
         indexed = true;
         total = data.total;
+        hasMore = false;
         pages.set(page, data.items);
       } else {
         for (const item of data.items) {
@@ -87,25 +100,32 @@ export function mountMusicList({ viewport, results, more, local, load, row, repo
       layout(true);
     } catch (error) {
       if (!signal.aborted) {
-        failed.add(page); report(error.message); more.hidden = false; more.textContent = '重新加载';
+        failed.add(page);
+        report((total ? '部分曲目加载失败。' : '曲目加载失败。') + error.message);
         if (preview) results.style.height = total * rowHeight + 'px';
       }
     } finally {
       preview?.remove();
       pending.delete(page);
-      if (!signal.aborted && !pending.size) results.removeAttribute('aria-busy');
+      if (!signal.aborted) {
+        updateMore();
+        if (!pending.size) results.removeAttribute('aria-busy');
+      }
     }
   }
 
   viewport.addEventListener('scroll', () => {
     lastScroll = performance.now();
     if (frame) return;
-    frame = requestAnimationFrame(() => { frame = 0; windowRows(); if (!restore) remember(viewport.scrollTop); });
+    frame = requestAnimationFrame(() => {
+      frame = 0; windowRows(); updateMore();
+      if (!restore) remember(viewport.scrollTop);
+    });
   }, { passive: true, signal });
   const observer = new ResizeObserver(() => windowRows());
   observer.observe(viewport);
   signal.addEventListener('abort', () => { observer.disconnect(); cancelAnimationFrame(frame); }, { once: true });
-  more.onclick = () => { for (const page of failed.size ? [...failed] : [next]) void fetchPage(page); };
-  if (local) layout(true);
+  more.onclick = () => void fetchPage(retryPage());
+  if (local) { layout(true); updateMore(); }
   else void fetchPage(0);
 }

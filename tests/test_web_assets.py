@@ -16,8 +16,8 @@ computed-value time)。对**非继承**属性来说这不是「这一个值没�
 只是字幕看着歪了。所以下面两条各守一头:
 
 * :meth:`CssVariablesTest.test_every_var_reference_is_defined` —— 拼错就红;
-* :meth:`WordChipGridTest.test_grid_rows_are_registered_properties` —— 万一还是拼错了,
-  ``@property`` 让它只回落到那一个变量的初始值, 网格结构不塌。
+* :meth:`WordChipGridTest.test_grid_rows_are_registered_properties` 检查固定行高的长度类型
+  和初始值。句子级注音开关使用显式回落值，仍沿用固定行高。
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ _DEF = re.compile(r"(?:^|[;{\s])(--[\w-]+)\s*:")
 _PROP = re.compile(r"@property\s+(--[\w-]+)")
 #: ``var(--x)`` / ``var(--x, 回落值)`` —— 第二组捕获到逗号就说明有回落值
 _USE = re.compile(r"var\(\s*(--[\w-]+)\s*(,)?")
+_STYLE_SET = re.compile(r"""\.style\.setProperty\(\s*(['"])(--[\w-]+)\1""")
 
 
 def assets() -> list[Path]:
@@ -66,11 +67,16 @@ class CssVariablesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.defined, cls.bare, cls.used = scan()
+        cls.runtime_defined = {
+            name
+            for path in (WEB / "js").glob("*.js")
+            for _, name in _STYLE_SET.findall(path.read_text(encoding="utf-8"))
+        }
 
     def test_every_var_reference_is_defined(self):
         """``var(--x)`` (没写回落值的) 引用的名字必须在某处定义过."""
-        missing = {name: sorted(files)
-                   for name, files in self.bare.items() if name not in self.defined}
+        missing = {name: sorted(files) for name, files in self.bare.items()
+                   if name not in self.defined and name not in self.runtime_defined}
         self.assertFalse(missing, f"引用了没定义的自定义属性: {missing}")
 
     def test_no_dead_custom_properties(self):
@@ -97,29 +103,29 @@ class WordChipGridTest(unittest.TestCase):
         cls.reader = (WEB / "css" / "reader.css").read_text(encoding="utf-8")
         cls.base = (WEB / "css" / "base.css").read_text(encoding="utf-8")
 
-    def grid_vars(self) -> list[str]:
-        """``.w`` 的 ``grid-template-rows`` 里用到的自定义属性."""
+    def grid_rows(self) -> str:
+        """``.w`` 的固定行高及回落值。"""
         bodies = [m.group(1) for m in re.finditer(r"\.w\s*\{([^}]*)\}", self.reader)
                   if "grid-template-rows" in m.group(1)]
         self.assertEqual(len(bodies), 1, "reader.css 里 .w 的网格声明不唯一")
         rows = re.search(r"grid-template-rows\s*:([^;]*);", bodies[0])
         self.assertIsNotNone(rows, "没找到 grid-template-rows")
-        return [m.group(1) for m in _USE.finditer(rows.group(1))]
+        return rows.group(1)
 
     def test_grid_rows_come_from_variables(self):
-        names = self.grid_vars()
         #  行1 注音 / 行2 原文 / 行3 记号条 (高度 + 间距) / 行4 转写
-        self.assertEqual(names, ["--lh-read", "--lh-text", "--h-bar", "--gap-bar",
-                                 "--lh-roman"])
+        self.assertEqual(
+            " ".join(self.grid_rows().split()),
+            "var(--read-row, var(--lh-read)) var(--lh-text) "
+            "calc(var(--h-bar) + var(--gap-bar)) var(--roman-row, var(--lh-roman))",
+        )
 
     def test_grid_rows_are_registered_properties(self):
-        """每一个都得 ``@property`` 注册成 ``<length>`` 且带初始值.
-
-        注册过之后, 名字拼错只会让**那一个**变量回落到初始值; 没注册的话整条
-        ``grid-template-rows`` 会回落成 ``none``, 四行高度改由内容决定 —— 字幕就歪了。
-        """
+        """固定行高注册为带初始值的长度，句子级覆盖沿用显式回落值。"""
         blocks = dict(re.findall(r"@property\s+(--[\w-]+)\s*\{([^}]*)\}", self.base))
-        for name in self.grid_vars():
+        for name, fallback in _USE.findall(self.grid_rows()):
+            if fallback:
+                continue
             with self.subTest(var=name):
                 body = blocks.get(name)
                 self.assertIsNotNone(body, f"{name} 没有 @property 注册")

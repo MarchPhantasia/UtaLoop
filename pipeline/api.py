@@ -114,6 +114,7 @@ class Api:
         #  ThreadingHTTPServer 是多线程的 —— 用一把锁把分析串起来。反正是 CPU 密集,
         #  并发跑也不会更快。
         self._lock = threading.Lock()
+        self._analysis_slots = threading.BoundedSemaphore(4)
 
     # ---------------------------------------------------------------- 入口
 
@@ -142,7 +143,13 @@ class Api:
         if parts == ["health"] and method == "GET":
             return self._health(h, query)
         if parts == ["analyze"] and method == "POST":
-            return self._analyze(h, query)
+            if not self._analysis_slots.acquire(blocking=False):
+                h.close_connection = True
+                raise ApiError(429, "分析请求过多，请稍后重试")
+            try:
+                return self._analyze(h, query)
+            finally:
+                self._analysis_slots.release()
         raise ApiError(404, f"没有这个接口: {method} {path}")
 
     def _authorize(self, h) -> None:
@@ -174,7 +181,11 @@ class Api:
 
     def _analyze(self, h, query: dict) -> None:
         name = safe_name(query.get("name", ""), "transcript.json")
-        raw = self._read_body(h)
+        try:
+            raw = self._read_body(h)
+        except TimeoutError:
+            h.close_connection = True
+            raise ApiError(408, "读取字幕超时，请重试") from None
         wanted = (query.get("lang") or "").strip()
         if wanted and langs.resolve(wanted) is None:
             raise ApiError(400, f"不支持的语言 {wanted!r}; 可用: {', '.join(langs.codes())}")

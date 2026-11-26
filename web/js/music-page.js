@@ -23,6 +23,7 @@ const practice = nativeApp() ? null : mountMusicPractice(refreshPracticeLibrary)
 
 const $ = id => document.getElementById(id);
 let account, accountRequest, request, loginRequest, timer, viewRequest, refreshStudyList, renderedHash;
+let openingSong;
 let loginError = '';
 let studies = new Map();
 let selectedFolder, selectedArtist;
@@ -31,6 +32,14 @@ const accountViews = new Set(['likes', 'folders', 'playlist']);
 const searchChoices = [...$('search-kinds').querySelectorAll('button')];
 const searchForm = $('search'), searchInput = $('query'), searchError = $('search-error'), searchClear = $('search-clear');
 const status = message => { $('status').textContent = message; };
+function loadFeedback(id, message = '', retry = null) {
+  const box = $(id);
+  const [text, button] = box.children;
+  text.textContent = message;
+  button.onclick = retry;
+  button.hidden = !retry;
+  box.hidden = !message;
+}
 const preference = 'utaloop.music.retention';
 const modeChoices = [...$('retention').querySelectorAll('input')];
 let mode = '30d', hasLogin = false, checked = false;
@@ -91,6 +100,19 @@ async function profile(signal) {
   renderRetention();
   $('account').textContent = '扫码登录';
 }
+async function loadLibraryPage(action, input, signal) {
+  try {
+    return await music(action, input, signal);
+  } catch (error) {
+    if (error.status !== 401 || !accountViews.has(action)) throw error;
+    // A restarted service may know the saved session before it has the user ID.
+    await profile(signal);
+    if (account) return music(action, input, signal);
+    $('authenticate').textContent = '扫码登录';
+    $('authenticate').hidden = false;
+    throw Error('网易云音乐登录已失效，请重新扫码。');
+  }
+}
 async function login() {
   stopLogin();
   loginRequest = new AbortController();
@@ -136,12 +158,15 @@ async function loadSongLyrics(song, signal) {
 }
 
 async function openSong(song, resumeCheckpoint = false, selection) {
+  const key = studyKey(song);
+  if (request && !request.signal.aborted && openingSong === key) return;
   request?.abort();
   const job = request = new AbortController();
+  openingSong = key;
   const { signal } = job;
   const hash = location.hash, source = route(), label = $('heading').textContent;
   try {
-    status('正在打开「' + song.name + '」…');
+    loadFeedback('song-feedback', '正在打开「' + song.name + '」…');
     const { id, cover } = await ensureSongTrack(song, signal);
     if (signal.aborted || location.hash !== hash) return;
     if (song.cover && cover !== song.cover) void patchTrack(id, { cover: song.cover }).catch(() => {});
@@ -150,13 +175,16 @@ async function openSong(song, resumeCheckpoint = false, selection) {
     if (hash) params.set('browse', hash);
     if (resumeCheckpoint) params.set('checkpoint', '1');
     addPlaybackSource(params, source.type, source.params.get('id'), label, selection);
+    loadFeedback('song-feedback');
     if (practice) {
       songMenu.close();
-      status('');
       practice.open(params);
     } else location.href = 'player.html?' + params;
   } catch (error) {
-    if (!signal.aborted && location.hash === hash) status(error.message);
+    if (!signal.aborted && location.hash === hash) {
+      loadFeedback('song-feedback', '「' + song.name + '」打开失败。' + error.message,
+        () => void openSong(song, resumeCheckpoint, selection));
+    }
   } finally {
     if (request === job) request = null;
   }
@@ -362,14 +390,16 @@ async function showFolders(signal, position, remember) {
     if (busy || signal.aborted) return;
     busy = true;
     more.disabled = true;
+    status(count ? '正在读取更多歌单…' : '正在读取歌单…');
     const preview = Array.from({ length: count ? 2 : 4 }, (_, i) => placeholder(i, true));
     results.append(...preview);
     results.setAttribute('aria-busy', 'true');
     try {
       let page;
       do {
-        page = await music('folders', { offset, limit: 60 }, signal);
+        page = await loadLibraryPage('folders', { offset, limit: 60 }, signal);
         if (signal.aborted) return;
+        if (!Array.isArray(page?.items)) throw Error('暂时无法读取歌单，请重试');
         preview.forEach(node => node.remove());
         for (const item of page.items) {
           const card = songRow(item, count++, 'folders').querySelector('.song-open');
@@ -378,14 +408,18 @@ async function showFolders(signal, position, remember) {
           results.append(card);
         }
         offset += 60;
+        $('meta').textContent = count + ' 个歌单';
       } while (page.more && (!count || viewport.scrollHeight - viewport.clientHeight < position));
       viewport.scrollTop = position || viewport.scrollTop;
       position = 0;
-      $('meta').textContent = count + ' 个歌单';
       more.hidden = !page.more; more.textContent = '加载更多歌单';
       status(count ? '' : '还没有自建歌单。');
     } catch (error) {
-      if (!signal.aborted) { status(error.message); more.hidden = false; more.textContent = '重新加载'; }
+      if (!signal.aborted) {
+        status((count ? '更多歌单加载失败。' : '歌单列表加载失败。') + error.message);
+        more.hidden = false;
+        more.textContent = '重试加载歌单';
+      }
     } finally {
       preview.forEach(node => node.remove());
       busy = false;
@@ -417,7 +451,8 @@ async function render() {
   songMenu.close();
   refreshStudyList = undefined;
   const currentHash = location.hash;
-  if (renderedHash !== currentHash) request?.abort();
+  const changedRoute = renderedHash !== currentHash;
+  if (changedRoute) request?.abort();
   renderedHash = currentHash;
   viewRequest?.abort();
   viewRequest = new AbortController();
@@ -461,6 +496,8 @@ async function render() {
   $('more').hidden = true; $('authenticate').hidden = true; $('list-head').hidden = true;
   $('more').disabled = false;
   $('results').classList.remove('folder-grid'); $('results').replaceChildren(); $('results').removeAttribute('aria-busy'); $('results').style.height = ''; $('viewport').scrollTop = 0;
+  loadFeedback('collection-feedback');
+  if (changedRoute || !request) loadFeedback('song-feedback');
   status('');
   if (type) {
     const title = artist?.name || ((type === 'playlist' || artistPage) ? params.get('name') : '');
@@ -504,6 +541,7 @@ async function render() {
     const mount = inCollection ? mountCollection : mountMusicList;
     refreshStudyList = mount({ viewport: $('viewport'), results: $('results'), more: $('more'), signal, position, local: data,
       emptyNote: emptyNotes[type],
+      indexing: (message, retry) => loadFeedback('collection-feedback', message, retry),
       row: artists ? (item, index) => artistRow(item, index, query) : (item, index, selection) => songRow(item, index, type, selection),
       report: message => status(message === '暂无内容' ? noResults : message),
       meta: (n, more) => { $('meta').textContent = (more ? '已载入 ' : '') + n.toLocaleString() + unit; },
@@ -512,7 +550,7 @@ async function render() {
         if (firstSearch) searchBusy(true);
         let page;
         const input = artistPage ? { id, kind: 'artist-songs', includeArtist: !artist } : Object.fromEntries(params);
-        try { page = await music(artistPage ? 'search' : type, { ...input, offset, limit }, signal); }
+        try { page = await loadLibraryPage(artistPage ? 'search' : type, { ...input, offset, limit }, signal); }
         finally { if (firstSearch && !signal.aborted) searchBusy(false); }
         if (!signal.aborted && page.playlist) {
           headerCover(page.playlist.cover);
@@ -724,8 +762,6 @@ async function restore() {
   const { signal } = job;
   $('account').disabled = true;
   $('retention').disabled = true;
-  checked = false;
-  account = null;
   loginError = '';
   try {
     const active = await music('retention', {}, signal);
@@ -735,7 +771,11 @@ async function restore() {
     if (active) { mode = active; rememberMode(); }
     renderRetention();
     if (hasLogin) await profile(signal);
-    else $('account').textContent = '扫码登录';
+    else {
+      account = null;
+      renderRetention();
+      $('account').textContent = '扫码登录';
+    }
   } catch (error) {
     if (signal.aborted) return false;
     loginError = error.message;
@@ -750,7 +790,7 @@ async function restore() {
   return !signal.aborted;
 }
 async function refreshAccountView() {
-  if (await restore() && accountViews.has(route().type)) await render();
+  if (await restore() && accountViews.has(route().type) && (!loginError || !account)) await render();
 }
 function refreshView() {
   void render();

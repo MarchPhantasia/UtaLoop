@@ -20,6 +20,8 @@ export const GLOBAL_KEYS = ['linguatrack.config.v1', 'linguatrack.settings.v1', 
 const MUSIC_KEYS = [MUSIC_QUALITY_KEY, SONG_VOLUME_KEY];
 const TRACK_PREFIX = 'linguatrack.track.';
 const CREDENTIAL_FIELDS = ['apiKey', 'apiToken', 'asrApiKey'];
+const CONNECTION_FIELDS = ['apiBase', 'apiToken', 'baseUrl', 'apiKey', 'model', 'reasoningEffort',
+  'providers', 'activeProviderId', ...Object.keys(DEFAULTS).filter(key => key.startsWith('asr'))];
 const ID = /^[a-zA-Z0-9_-]{1,128}$/;
 const musicId = value => (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
   || (typeof value === 'string' && /^\d{1,20}$/.test(value));
@@ -352,7 +354,7 @@ function trackIds(stores, local) {
 }
 
 /** Copy conflicting tracks and remap all position/hash cache keys as one group. */
-export function prepareImport(backup, current, local, { restoreConfig = true } = {}) {
+export function prepareImport(backup, current, local, { restoreConfig = true, restoreConnections = false } = {}) {
   validateBackup(backup);
   const sourceIds = trackIds(backup.stores, backup.localStorage);
   const existingIds = trackIds(current, local);
@@ -414,19 +416,30 @@ export function prepareImport(backup, current, local, { restoreConfig = true } =
     settings.track = mapping.get(settings.track) || settings.track || '';
     changes.set(GLOBAL_KEYS[1], JSON.stringify(settings));
   }
-  if (restoreConfig && !backup.includesCredentials) {
+  if (restoreConfig && (!restoreConnections || !backup.includesCredentials)) {
     const cfg = parseJSON(changes.get(GLOBAL_KEYS[0]) || '{}');
     const old = parseJSON(local[GLOBAL_KEYS[0]] || '{}');
-    for (const key of CREDENTIAL_FIELDS) delete cfg[key];
-    const base = value => String(value || '').trim().replace(/\/+$/, '');
-    for (const [key, address] of [['apiToken', 'apiBase'], ['asrApiKey', 'asrBaseUrl']]) {
-      if (typeof old[key] === 'string' && base(cfg[address]) === base(old[address])) cfg[key] = old[key];
+    if (restoreConnections) {
+      restoreConnectionKeys(cfg, old);
+    } else {
+      for (const key of CONNECTION_FIELDS) {
+        if (Object.hasOwn(old, key)) cfg[key] = old[key];
+        else delete cfg[key];
+      }
     }
-    restoreModelKeys(cfg, old);
-    changes.set(GLOBAL_KEYS[0], JSON.stringify(cfg));
+    changes.set(GLOBAL_KEYS[0], Object.keys(cfg).length ? JSON.stringify(cfg) : null);
   }
   return { batches, changes, mapping, skipped,
     copies: backup.stores.tracks.filter((r) => mapping.get(r.key) !== r.key).length };
+}
+
+function restoreConnectionKeys(cfg, old) {
+  for (const key of CREDENTIAL_FIELDS) delete cfg[key];
+  const base = value => String(value || '').trim().replace(/\/+$/, '');
+  for (const [key, address] of [['apiToken', 'apiBase'], ['asrApiKey', 'asrBaseUrl']]) {
+    if (typeof old[key] === 'string' && base(cfg[address]) === base(old[address])) cfg[key] = old[key];
+  }
+  restoreModelKeys(cfg, old);
 }
 
 function sameModelEndpoint(a, b) {

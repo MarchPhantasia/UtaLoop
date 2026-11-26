@@ -4,7 +4,7 @@ services:
     build:
       context: .
     ports:
-      - "${LINGUA_BIND:-127.0.0.1}:${LINGUA_PORT:-5173}:5173"
+      - "127.0.0.1:${LINGUA_PORT:-5173}:5173"
     environment:
       LINGUA_HOST: 0.0.0.0
       LINGUA_PORT: "5173"

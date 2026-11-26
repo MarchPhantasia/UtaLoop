@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const { outputFiles } = await build({
-  stdin: { contents: `export { openFileRepair } from './web/js/backup-ui.js';`, resolveDir: root },
+  stdin: { contents: `export { openBackupImport, openFileRepair } from './web/js/backup-ui.js';`, resolveDir: root },
   bundle: true, write: false, format: 'iife', globalName: 'RepairTest',
   plugins: [{ name: 'repair-storage', setup(b) {
     b.onResolve({ filter: /^\.\/library\.js$/ }, () => ({ path: 'library', namespace: 'repair' }));
@@ -23,6 +23,42 @@ const { outputFiles } = await build({
   } }],
 });
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test('backup import previews service addresses and requires a fresh choice for each file', async (t) => {
+  const dom = new JSDOM('<body></body>', { url: 'https://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  t.after(() => dom.window.close());
+  const w = dom.window;
+  w.eval(outputFiles[0].text);
+  w.RepairTest.openBackupImport();
+  const input = w.document.querySelector('input[type=file]');
+  const toggle = w.document.querySelector('button[aria-label="恢复服务配置"]');
+  assert.equal(toggle.disabled, true);
+  const selectBackup = async (hostname) => {
+    const backup = { format: 'linguatrack.user-data', version: 1, exportedAt: '2026-11-26T00:00:00Z',
+      includesCredentials: true, localStorage: { 'linguatrack.config.v1': JSON.stringify({
+        apiBase: 'https://' + hostname + '/analyzer', apiToken: 'sample-token',
+        asrBaseUrl: 'https://speech.example/v1', baseUrl: 'https://model.example/v1',
+      }) }, stores: { tracks: [], data: [], tr: [], word: [], chat: [], kv: [] } };
+    Object.defineProperty(input, 'files', {
+      configurable: true, value: [{ name: 'backup.json', text: async () => JSON.stringify(backup) }],
+    });
+    input.dispatchEvent(new w.Event('change'));
+    await flush();
+  };
+  await selectBackup('analysis.example');
+  assert.equal(toggle.disabled, false);
+  assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+  const preview = w.document.querySelector('.transfer');
+  for (const url of ['https://analysis.example/analyzer', 'https://speech.example/v1', 'https://model.example/v1']) {
+    assert.ok(preview.textContent.includes(url));
+  }
+  assert.ok(!preview.textContent.includes('sample-token'));
+  toggle.click();
+  assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+  await selectBackup('other.example');
+  assert.ok(preview.textContent.includes('https://other.example/analyzer'));
+  assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+});
 
 for (const batch of [true, false]) test(`${batch ? 'batch' : 'single'} repair retains picker access until writes complete`, async (t) => {
   const dom = new JSDOM('<body></body>', { url: 'https://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });

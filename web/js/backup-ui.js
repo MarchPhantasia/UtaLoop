@@ -1,9 +1,10 @@
-import { exportBackup, parseBackup, importBackup, backupSummary } from './backup.js';
+import { exportBackup, parseBackup, importBackup, backupSummary, GLOBAL_KEYS } from './backup.js';
+import { baseOf } from './api.js';
 import { attachFiles, listTracks, missingFiles, matchFiles, AUDIO_ACCEPT, SUB_EXT } from './library.js';
 import { openSheet, closeSheet } from './sheet.js';
 import { button, buttonBar, group, infoRow, switchRow } from './rows.js';
 import { el, isIOS, toast } from './util.js';
-import { saveFile } from './native.js';
+import { nativeApp, saveFile } from './native.js';
 import { errorMessage } from './errors.js';
 
 let importing = false;
@@ -52,6 +53,29 @@ export function openBackupExport() {
   openSheet('导出数据', body);
 }
 
+function serviceAddress(raw, base) {
+  if (!raw?.trim()) return '未配置';
+  try {
+    const url = new URL(raw, base);
+    if (url.protocol === 'https:' || url.protocol === 'http:') return url.origin + url.pathname;
+  } catch { /* Keep invalid addresses visible in the preview. */ }
+  return '地址无效';
+}
+
+function connectionPreview(backup) {
+  const cfg = JSON.parse(backup.localStorage[GLOBAL_KEYS[0]] || '{}');
+  const analysis = baseOf(cfg.apiBase || '');
+  const rows = group(
+    infoRow('备份中的分析接口', analysis ? serviceAddress(analysis, location.href) : nativeApp() ? '未配置' : '当前站点'),
+    infoRow('备份中的转录接口', serviceAddress(cfg.asrBaseUrl)),
+  );
+  for (const provider of cfg.providers?.length ? cfg.providers : [{ baseUrl: cfg.baseUrl }]) {
+    rows.append(infoRow(provider.name ? 'AI 接口 · ' + provider.name : '备份中的 AI 接口',
+      serviceAddress(provider.baseUrl)));
+  }
+  return rows;
+}
+
 export function openBackupImport() {
   if (importing) { toast('数据正在导入'); return; }
   const body = el('div', 'pane transfer');
@@ -59,19 +83,32 @@ export function openBackupImport() {
   const note = feedback();
   const preview = el('div');
   const name = el('p', 'transfer-filename', '未选择备份文件');
-  let backup = null, restoreConfig = true, selection = 0;
-  const configRow = switchRow('使用备份中的全局配置', '替换当前模型服务商与显示偏好',
-    () => restoreConfig, (v) => { restoreConfig = !!v; });
+  let backup = null, restoreConfig = true, restoreConnections = false, selection = 0;
+  const configRow = switchRow('恢复全局设置', '语言、显示和播放设置',
+    () => restoreConfig, (v) => {
+      restoreConfig = v;
+      if (!v) {
+        restoreConnections = false;
+        connectionRow.refresh();
+      }
+      connectionSwitch.disabled = !backup || !restoreConfig;
+    });
+  const connectionRow = switchRow('恢复服务配置', '使用备份中的分析、转录和 AI 服务地址及凭据',
+    () => restoreConnections, (v) => { restoreConnections = v; });
+  const configSwitch = configRow.querySelector('button');
+  const connectionSwitch = connectionRow.querySelector('button');
+  connectionSwitch.disabled = true;
   const choose = button('选择备份', { glyph: 'i-doc', onPick: () => input.click() });
   const restore = button('导入数据', { main: true, glyph: 'i-upload', onPick: async () => {
     if (!backup || importing) return;
     importing = true;
     restore.disabled = true;
     choose.disabled = true;
-    configRow.querySelector('button').disabled = true;
+    configSwitch.disabled = true;
+    connectionSwitch.disabled = true;
     note.textContent = '正在导入…';
     try {
-      await importBackup(backup, { restoreConfig });
+      await importBackup(backup, { restoreConfig, restoreConnections });
       // All configuration modules reload from the committed snapshot on the next page load.
       location.hash = 'restore';
       location.reload();
@@ -80,7 +117,8 @@ export function openBackupImport() {
       importing = false;
       restore.disabled = false;
       choose.disabled = false;
-      configRow.querySelector('button').disabled = false;
+      configSwitch.disabled = false;
+      connectionSwitch.disabled = !restoreConfig;
     }
   } });
   restore.disabled = true;
@@ -90,6 +128,9 @@ export function openBackupImport() {
     if (!file) return;
     const serial = ++selection;
     backup = null;
+    restoreConnections = false;
+    connectionRow.refresh();
+    connectionSwitch.disabled = true;
     restore.disabled = true;
     preview.textContent = '';
     name.textContent = file.name;
@@ -111,15 +152,16 @@ export function openBackupImport() {
         infoRow('学习记录', `${summary.study} 条`),
         infoRow('重复媒体', copies ? `${copies} 条保存为副本` : '无'),
         infoRow('待补充文件', `${summary.mediaFiles} 个媒体文件、${parsed.stores.tracks.filter((r) => r.value.transcript).length} 个字幕文件`),
-        infoRow('API Key 与访问令牌', parsed.includesCredentials ? '包含在备份中' : '保留匹配接口的本机凭据'),
-      ));
+        infoRow('API Key 与访问令牌', parsed.includesCredentials ? '包含在备份中' : '仅复用地址匹配的凭据'),
+      ), connectionPreview(parsed));
       note.textContent = '';
       restore.disabled = false;
+      connectionSwitch.disabled = !restoreConfig;
     } catch (err) {
       if (serial === selection) note.textContent = errorText(err);
     }
   });
-  body.append(input, name, preview, group(configRow), buttonBar(choose, restore), note);
+  body.append(input, name, preview, group(configRow, connectionRow), buttonBar(choose, restore), note);
   openSheet('导入数据', body, { cls: 'sheet-tall' });
 }
 

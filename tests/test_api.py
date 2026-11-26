@@ -27,13 +27,14 @@ from functools import partial
 from http.server import ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pipeline import SCHEMA_VERSION, __version__, langs  # noqa: E402
 from pipeline.api import MAX_BODY, Api, check_id, safe_name, slug_id  # noqa: E402
-from pipeline.serve import RangeHandler, serve  # noqa: E402
+from pipeline.serve import BoundedHTTPServer, RangeHandler, _RequestReader, serve  # noqa: E402
 from pipeline.cli import _cmd_serve, build_parser  # noqa: E402
 
 
@@ -103,8 +104,7 @@ class ApiCase(unittest.TestCase):
         (self.tmp / "index.html").write_text("<!doctype html>hi\n", encoding="utf-8")
         self.api = Api(api_token=self.api_token)
         cls = type("_H", (RangeHandler,), {"api": self.api})
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0),
-                                         partial(cls, directory=str(self.tmp)))
+        self.httpd = BoundedHTTPServer(("127.0.0.1", 0), partial(cls, directory=str(self.tmp)))
         self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
         thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         thread.start()
@@ -330,8 +330,8 @@ class AuthTest(ApiCase):
 
 class AuthConfigTest(unittest.TestCase):
     def test_public_api_requires_a_token_before_binding(self):
-        for host in ("0.0.0.0", "192.0.2.1", "::"):
-            with self.subTest(host=host), patch("pipeline.serve.ThreadingHTTPServer") as server:
+        for host in ("0.0.0.0", "192.0.2.1", "::", ""):
+            with self.subTest(host=host), patch("pipeline.serve.BoundedHTTPServer") as server:
                 with self.assertRaisesRegex(ValueError, "LINGUA_API_TOKEN"):
                     serve(Path("."), host=host, api_token="  ")
                 server.assert_not_called()
@@ -339,7 +339,7 @@ class AuthConfigTest(unittest.TestCase):
     def test_public_authenticated_api_and_static_only_server_can_start(self):
         for api, token in ((True, "example-test-token"), (False, None)):
             output = StringIO()
-            with self.subTest(api=api), patch("pipeline.serve.ThreadingHTTPServer") as server, \
+            with self.subTest(api=api), patch("pipeline.serve.BoundedHTTPServer") as server, \
                     redirect_stdout(output):
                 serve(Path("."), host="0.0.0.0", api=api, api_token=token)
                 server.return_value.__enter__.return_value.serve_forever.assert_called_once()
@@ -359,6 +359,50 @@ class AuthConfigTest(unittest.TestCase):
         for token in ("bad token", "bad\ntoken", "\u4ee4\u724c", "bad\x7ftoken"):
             with self.subTest(token=repr(token)), self.assertRaisesRegex(ValueError, "ASCII"):
                 Api(api_token=token)
+
+
+class NetworkGuardTest(unittest.TestCase):
+    def test_request_reader_does_not_extend_deadline_when_data_arrives(self):
+        connection = Mock()
+        connection.recv_into.return_value = 1
+        reader = _RequestReader(connection, timeout=15)
+        reader.deadline = 20
+        buffer = bytearray(1)
+        with patch("pipeline.serve.monotonic", side_effect=[11, 17, 21]):
+            self.assertEqual(reader.readinto(buffer), 1)
+            self.assertEqual(reader.readinto(buffer), 1)
+            with self.assertRaises(TimeoutError):
+                reader.readinto(buffer)
+        self.assertEqual(connection.recv_into.call_count, 2)
+        self.assertEqual(connection.settimeout.call_args_list, [call(9), call(15), call(3), call(15)])
+
+    def test_connection_limit_releases_slots_when_a_handler_finishes(self):
+        server = BoundedHTTPServer.__new__(BoundedHTTPServer)
+        server._connections = threading.BoundedSemaphore(1)
+        request, excess, later = object(), object(), object()
+        address = ("127.0.0.1", 1234)
+        with patch.object(ThreadingHTTPServer, "process_request") as dispatch, \
+                patch.object(ThreadingHTTPServer, "process_request_thread"), \
+                patch.object(server, "shutdown_request") as close:
+            server.process_request(request, address)
+            server.process_request(excess, address)
+            close.assert_called_once_with(excess)
+            server.process_request_thread(request, address)
+            server.process_request(later, address)
+        self.assertEqual(dispatch.call_args_list, [call(request, address), call(later, address)])
+
+    def test_music_requires_a_loopback_listener_and_peer(self):
+        handler = RangeHandler.__new__(RangeHandler)
+        handler.headers = {"Host": "localhost:5173"}
+        for listener, peer, expected in (
+            ("127.0.0.1", "127.0.0.1", "localhost:5173"),
+            ("0.0.0.0", "127.0.0.1", ""),
+            ("127.0.0.1", "192.0.2.1", ""),
+        ):
+            with self.subTest(listener=listener, peer=peer):
+                handler.server = SimpleNamespace(server_address=(listener, 5173))
+                handler.client_address = (peer, 1234)
+                self.assertEqual(handler._music_host(), expected)
 
 
 # ---------------------------------------------------------------- /api/analyze

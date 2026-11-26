@@ -1,6 +1,5 @@
 using System.Diagnostics;
-using System.Net;
-using System.Net.Http;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 
 namespace UtaLoop.Desktop;
@@ -11,8 +10,12 @@ internal sealed class DesktopServices(string dataDirectory) : IDisposable
     internal static readonly Uri Origin = new("http://127.0.0.1:38596/");
     private readonly string files = AppContext.BaseDirectory;
     private readonly string token = CreateToken();
+    private readonly TaskCompletionSource<bool> siteStopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Process? music;
     private Process? site;
+    private Socket? siteListener;
+
+    internal Task SiteStopped => siteStopped.Task;
 
     internal async Task StartAsync(CancellationToken closing)
     {
@@ -35,21 +38,35 @@ internal sealed class DesktopServices(string dataDirectory) : IDisposable
         };
         music.Start();
         Drain(music);
-        var timeout = Task.Delay(TimeSpan.FromSeconds(15), closing);
-        if (await Task.WhenAny(musicReady.Task, timeout) != musicReady.Task)
-        {
-            closing.ThrowIfCancellationRequested();
-            throw new IOException("音乐服务启动超时。");
-        }
-        var musicPort = await musicReady.Task;
+        var musicPort = await WaitForReadyAsync(musicReady.Task, "音乐服务启动超时。", closing);
 
+        var siteReady = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var siteInfo = StartInfo("runtime", "python", "python.exe");
         siteInfo.Arguments = "-B " + QuotePath(Path.Combine(files, "serve_desktop.py")) + " " + Origin.Port;
         siteInfo.EnvironmentVariables["UTALOOP_DESKTOP_MUSIC_PORT"] = musicPort.ToString();
-        siteInfo.EnvironmentVariables["UTALOOP_DESKTOP_VERSION"] = Program.Version;
-        site = Process.Start(siteInfo) ?? throw new IOException("无法启动本地页面服务。");
+        site = new Process { StartInfo = siteInfo, EnableRaisingEvents = true };
+        var siteError = $"本地页面无法启动，请检查端口 {Origin.Port} 是否已被占用。";
+        site.Exited += (_, _) =>
+        {
+            siteReady.TrySetException(new IOException(siteError));
+            siteStopped.TrySetResult(true);
+        };
+        site.OutputDataReceived += (_, message) =>
+        {
+            const string prefix = "UTALOOP_SITE_READY ";
+            if (message.Data is { } line && line.StartsWith(prefix, StringComparison.Ordinal))
+                siteReady.TrySetResult(line.Substring(prefix.Length));
+        };
+        site.Start();
         Drain(site);
-        await WaitForSiteAsync(site, closing);
+        var listener = await WaitForReadyAsync(siteReady.Task, siteError, closing);
+        // Retain the exclusive listener even if Python exits while the WebView is still open.
+        siteListener = new Socket(new SocketInformation
+        {
+            ProtocolInformation = Convert.FromBase64String(listener),
+            Options = SocketInformationOptions.Listening,
+        });
+        if (site.HasExited) throw new IOException(siteError);
     }
 
     private ProcessStartInfo StartInfo(params string[] executable)
@@ -84,35 +101,19 @@ internal sealed class DesktopServices(string dataDirectory) : IDisposable
         process.BeginErrorReadLine();
     }
 
-    private async Task WaitForSiteAsync(Process service, CancellationToken closing)
+    private static async Task<T> WaitForReadyAsync<T>(Task<T> ready, string timeoutMessage, CancellationToken closing)
     {
-        using var client = new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false })
-        {
-            Timeout = TimeSpan.FromSeconds(2),
-        };
-        var elapsed = Stopwatch.StartNew();
-        while (elapsed.Elapsed < TimeSpan.FromSeconds(15) && !service.HasExited)
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(Origin, "desktop/ready"));
-            request.Headers.Add("X-UtaLoop-Ready", token);
-            try
-            {
-                using var result = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, closing);
-                if (result.StatusCode == HttpStatusCode.NoContent &&
-                    result.Headers.TryGetValues("X-UtaLoop-Desktop-Version", out var versions) &&
-                    versions.Contains(Program.Version)) return;
-            }
-            catch (HttpRequestException) { }
-            catch (OperationCanceledException) when (!closing.IsCancellationRequested) { }
-            await Task.Delay(150, closing);
-        }
-        throw new IOException($"本地页面无法启动，请检查端口 {Origin.Port} 是否已被占用。");
+        var finished = await Task.WhenAny(ready, Task.Delay(TimeSpan.FromSeconds(15), closing));
+        closing.ThrowIfCancellationRequested();
+        if (finished != ready) throw new IOException(timeoutMessage);
+        return await ready;
     }
 
     public void Dispose()
     {
         Stop(site);
         Stop(music);
+        siteListener?.Dispose();
     }
 
     private static void Stop(Process? process)

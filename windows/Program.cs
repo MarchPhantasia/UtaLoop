@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -8,8 +7,6 @@ namespace UtaLoop.Desktop;
 internal static class Program
 {
     internal const string MutexName = @"Local\UtaLoop.Windows.Desktop";
-    internal static string Version { get; } = typeof(Program).Assembly
-        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
 
     [STAThread]
     private static void Main()
@@ -71,13 +68,21 @@ internal sealed class DesktopWindow : Form
             try
             {
                 Directory.CreateDirectory(profile);
-                await browser.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(userDataFolder: profile));
+                // Keep WebView2 audio in its browser process for OBS process-loopback capture.
+                var options = new CoreWebView2EnvironmentOptions("--disable-features=AudioServiceOutOfProcess");
+                var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: profile, options: options);
+                await browser.EnsureCoreWebView2Async(environment);
                 await services.StartAsync(closing.Token);
                 if (IsDisposed) return;
                 ConfigureBrowser();
                 browser.Visible = true;
                 status.Visible = false;
                 browser.Source = DesktopServices.Origin;
+                await services.SiteStopped;
+                if (IsDisposed || closing.IsCancellationRequested) return;
+                browser.Dispose();
+                status.Text = "UtaLoop 本地页面服务已退出。\n\n关闭窗口后可重新尝试。";
+                status.Visible = true;
             }
             catch (Exception error) when (!IsDisposed && !closing.IsCancellationRequested)
             {

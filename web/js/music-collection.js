@@ -33,7 +33,12 @@ export function collectionPages(load) {
   let catalogue;
   function page(offset, signal) {
     if (!pages.has(offset)) {
-      const request = load(offset, musicPageSize, signal).catch(error => {
+      const request = load(offset, musicPageSize, signal).then(data => {
+        if (!Number.isSafeInteger(data?.total) || data.total < 0 || !Array.isArray(data.items)) {
+          throw Error('歌单数据不完整，请重试');
+        }
+        return data;
+      }).catch(error => {
         if (pages.get(offset) === request) pages.delete(offset);
         throw error;
       });
@@ -65,7 +70,7 @@ export function collectionPages(load) {
 }
 
 export function mountCollection(options) {
-  const { viewport, results, more, signal, report } = options;
+  const { viewport, results, more, signal, report, indexing } = options;
   const form = document.getElementById('collection-search');
   const field = document.getElementById('collection-query');
   const clear = document.getElementById('collection-clear');
@@ -81,7 +86,7 @@ export function mountCollection(options) {
   document.getElementById('original-order-label').textContent = localSongs ? '默认顺序' : '歌单原序';
   let query = saved.query || '', order = choices.some(choice => choice.value === saved.order) ? saved.order : 'original';
   const positions = { ...saved.positions };
-  let view, timer;
+  let view, prepare, timer;
   field.value = query;
   clear.hidden = !query;
   menu.open = false;
@@ -92,44 +97,51 @@ export function mountCollection(options) {
     menu.querySelector('summary').setAttribute('aria-label', '排序方式，当前为' + label);
   }
   function isDefault() { return !query && order === 'original'; }
-  async function show(position, animate = true) {
+  function replaceView() {
     view?.abort();
     view = new AbortController();
-    const current = view.signal;
     results.replaceChildren(); results.style.height = '';
     results.removeAttribute('aria-busy'); viewport.scrollTop = 0; more.hidden = true;
     report('');
+    return view.signal;
+  }
+  async function show(position, animate = true) {
+    prepare?.abort();
+    prepare = null;
+    indexing();
     if (isDefault()) {
-      mountMusicList({ ...options, local: localSongs, position, animate, signal: current, load: offset => source.page(offset),
-        row: (song, index) => options.row(song, index, { index, order, songs: localSongs }) });
+      mountMusicList({ ...options, local: localSongs, position, animate, signal: replaceView(), load: offset => source.page(offset),
+        row: (song, index) => options.row(song, index, { index, order: 'original', songs: localSongs }) });
       if (localSongs?.length === 0) report(options.emptyNote);
       return;
     }
-    results.setAttribute('aria-busy', 'true');
-    const meta = document.getElementById('meta');
-    meta.textContent = '正在准备完整歌单…';
+    prepare = new AbortController();
+    const current = prepare.signal;
+    const selectedQuery = query, selectedOrder = order;
+    if (!localSongs) indexing('正在准备完整歌单…');
     try {
       const songs = localSongs || await source.all(current, (done, total) => {
-        meta.textContent = '正在读取歌单　' + done.toLocaleString() + ' / ' + total.toLocaleString();
+        if (!current.aborted) indexing('正在读取歌单　' + done.toLocaleString() + ' / ' + total.toLocaleString());
       });
       if (current.aborted) return;
-      const ordered = selectCollection(songs, '', order);
-      const local = query ? selectCollection(ordered, query, 'original') : ordered;
-      const slots = query ? new Map(ordered.map((song, index) => [song, index])) : null;
-      mountMusicList({ ...options, local, position, animate, signal: current,
-        row: (song, index) => options.row(song, index, { index: slots?.get(song) ?? index, order, songs: ordered }),
+      const ordered = selectCollection(songs, '', selectedOrder);
+      const local = selectedQuery ? selectCollection(ordered, selectedQuery, 'original') : ordered;
+      const slots = selectedQuery ? new Map(ordered.map((song, index) => [song, index])) : null;
+      const meta = document.getElementById('meta');
+      indexing();
+      mountMusicList({ ...options, local, position, animate, signal: replaceView(),
+        row: (song, index) => options.row(song, index, { index: slots?.get(song) ?? index, order: selectedOrder, songs: ordered }),
         meta: n => {
-          meta.textContent = query ? '找到 ' + n.toLocaleString() + ' 首，共 ' + songs.length.toLocaleString() + ' 首'
+          meta.textContent = selectedQuery ? '找到 ' + n.toLocaleString() + ' 首，共 ' + songs.length.toLocaleString() + ' 首'
             : songs.length.toLocaleString() + ' 首歌曲';
         },
       });
-      if (!local.length) report(query ? noun + '中没有匹配的歌曲，可以换个歌名或歌手。' : options.emptyNote || '暂无内容');
+      if (!local.length) report(selectedQuery ? noun + '中没有匹配的歌曲，可以换个歌名或歌手。' : options.emptyNote || '暂无内容');
     } catch (error) {
       if (current.aborted) return;
-      meta.textContent = ''; report(error.message);
-      more.textContent = '重新加载'; more.hidden = false; more.onclick = () => show(position);
+      indexing('暂时无法应用搜索或排序。' + error.message, () => void show(position));
     } finally {
-      if (!current.aborted) results.removeAttribute('aria-busy');
+      if (prepare?.signal === current) prepare = null;
     }
   }
   function apply() {
@@ -164,7 +176,9 @@ export function mountCollection(options) {
       closeSort();
     }
   }, { signal });
-  signal.addEventListener('abort', () => { clearTimeout(timer); view?.abort(); menu.open = false; }, { once: true });
+  signal.addEventListener('abort', () => {
+    clearTimeout(timer); prepare?.abort(); view?.abort(); menu.open = false;
+  }, { once: true });
   updateMenu(); void show(options.position);
   if (localSongs) return songs => {
     localSongs = songs;

@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
-import mimetypes
 import io
 import json
+import mimetypes
 import os
 import re
 from functools import partial
@@ -25,6 +25,8 @@ from http.client import HTTPConnection, HTTPException
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address
 from pathlib import Path
+from threading import BoundedSemaphore
+from time import monotonic
 from urllib.parse import urlsplit
 
 from .api import Api
@@ -46,11 +48,75 @@ for _ext, _mime in {
     mimetypes.add_type(_mime, _ext)
 
 
+class BoundedHTTPServer(ThreadingHTTPServer):
+    max_connections = 32
+
+    def __init__(self, server_address, handler):
+        self._connections = BoundedSemaphore(self.max_connections)
+        super().__init__(server_address, handler)
+
+    def process_request(self, request, client_address):
+        if not self._connections.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._connections.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connections.release()
+
+
+class _RequestReader(io.RawIOBase):
+    def __init__(self, connection, timeout):
+        self.connection = connection
+        self.timeout = timeout
+        self.deadline = 0.0
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        remaining = self.deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("HTTP request read deadline exceeded")
+        self.connection.settimeout(min(self.timeout, remaining))
+        try:
+            return self.connection.recv_into(buffer)
+        finally:
+            self.connection.settimeout(self.timeout)
+
+
 class RangeHandler(SimpleHTTPRequestHandler):
     api: Api | None = None          # serve() 会派生一个带 api 的子类
     static: bool = True
     music_port: int = 3012
     music_bridge: str = "1"
+    timeout = 15.0
+    header_timeout = 10.0
+    body_timeout = 120.0
+
+    def setup(self) -> None:
+        super().setup()
+        self.rfile.close()
+        self._request_reader = _RequestReader(self.connection, self.timeout)
+        self.rfile = io.BufferedReader(self._request_reader)
+
+    def handle_one_request(self) -> None:
+        # The deadline applies across reads, even if the peer keeps sending data.
+        self._request_reader.deadline = monotonic() + self.header_timeout
+        super().handle_one_request()
+
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        self._request_reader.deadline = monotonic() + self.body_timeout
+        return True
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
@@ -98,11 +164,20 @@ class RangeHandler(SimpleHTTPRequestHandler):
             return
         self._api_only("POST")
 
-    def _music(self) -> None:
+    def _music_host(self) -> str:
+        listen_host, listen_port = self.server.server_address
+        if not (_is_loopback(listen_host) and _is_loopback(self.client_address[0])):
+            return ""
         host = self.headers.get("Host", "")
+        name, separator, port = host.partition(":")
+        if name in ("localhost", "127.0.0.1") and (port if separator else "80") == str(listen_port):
+            return host
+        return ""
+
+    def _music(self) -> None:
+        host = self._music_host()
         origin = self.headers.get("Origin", "")
-        if (not re.fullmatch(r"(localhost|127\.0\.0\.1)(:\d+)?", host)
-                or origin != "http://" + host
+        if (not host or origin != "http://" + host
                 or self.headers.get_content_type() != "application/json"):
             self.send_error(403)
             return
@@ -113,12 +188,13 @@ class RangeHandler(SimpleHTTPRequestHandler):
         if action not in actions or not length.isdigit() or not 0 < int(length) <= 4096:
             self.send_error(400)
             return
-        if action in _MUSIC_CACHE_ACTIONS and not _is_loopback(self.server.server_address[0]):
-            self.send_error(403)
+        body = self.rfile.read(int(length))
+        if len(body) != int(length):
+            self.send_error(400)
             return
         service = HTTPConnection("127.0.0.1", self.music_port, timeout=20)
         try:
-            service.request("POST", "/" + action, self.rfile.read(int(length)),
+            service.request("POST", "/" + action, body,
                             {"Content-Type": "application/json", "X-UtaLoop": self.music_bridge,
                              "Cookie": self.headers.get("Cookie", "")})
             upstream = service.getresponse()
@@ -138,9 +214,8 @@ class RangeHandler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def _music_media(self) -> None:
-        host = self.headers.get("Host", "")
-        if (not _is_loopback(self.server.server_address[0])
-                or not re.fullmatch(r"(localhost|127\.0\.0\.1)(:\d+)?", host)
+        host = self._music_host()
+        if (not host
                 or self.headers.get("Origin") not in (None, "http://" + host)
                 or self.headers.get("Sec-Fetch-Site") not in (None, "same-origin", "none")):
             self.send_error(403)
@@ -265,7 +340,7 @@ def _is_loopback(host: str) -> bool:
     try:
         return ip_address(host).is_loopback
     except ValueError:
-        return host in ("localhost", "")
+        return host == "localhost"
 
 
 def serve(root: Path, host: str = "127.0.0.1", port: int = 5173,
@@ -281,7 +356,7 @@ def serve(root: Path, host: str = "127.0.0.1", port: int = 5173,
     cls = type("_Handler", (RangeHandler,),
                {"api": Api(dicdir, api_token=api_token) if api else None, "static": static})
     handler = partial(cls, directory=str(root))
-    with ThreadingHTTPServer((host, port), handler) as httpd:
+    with BoundedHTTPServer((host, port), handler) as httpd:
         url = f"http://{host}:{port}/"
         bits = []
         if api:

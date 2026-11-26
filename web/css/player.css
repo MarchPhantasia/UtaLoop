@@ -384,6 +384,20 @@ body.video-rotated {
   min-height: 16px;
 }
 
+.playback-feedback {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 4px 12px; margin-bottom: 8px; padding: 4px 5px 4px 11px;
+  border-radius: 12px; background: var(--accent-soft); color: var(--ink-2);
+  font-size: 13px;
+}
+.playback-feedback p { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.playback-feedback button {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 44px; padding: 6px 10px;
+  border-radius: 9px; color: var(--accent-2); font-weight: 650;
+}
+.playback-feedback button:is(:hover,:focus-visible) { background: var(--sheet); }
+.playback-feedback .ic { width: 15px; height: 15px; }
+
 /* ---------------------------------------------------------------- 讲解面板 */
 
 .favorite-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 6px 10px; border-radius: 12px; font-size: 13px; color: var(--ink-2); }

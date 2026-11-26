@@ -233,7 +233,7 @@ test('requested source quality reaches NetEase and reports the delivered quality
   assert.equal((await call('source', '', { id: 42 })).result, url);
   assert.deepEqual((await call('source', '', { id: 42, level: 'lossless' })).result,
     { url, level: 'exhigh', fallback: false });
-  await call('source', '', { id: 42, level: 'invalid' }, 502);
+  await call('source', '', { id: 42, level: 'invalid' }, 400);
   assert.equal(requests, 1);
 });
 
@@ -251,7 +251,7 @@ test('source can fall back to a complete standard stream but never returns a tri
     { url, level: 'standard', fallback: true });
   assert.deepEqual(levels, ['hires', 'standard']);
   standardAvailable = false;
-  await call('source', '', { id: 42, level: 'standard' }, 502);
+  await call('source', '', { id: 42, level: 'standard' }, 403);
   assert.deepEqual(levels, ['hires', 'standard', 'standard']);
 });
 
@@ -324,7 +324,7 @@ test('artist queries distinguish matching artists from song results and page cat
   assert.equal(second.items[0].id, 2);
   assert.equal(second.more, false);
   assert.equal(profiles, 1);
-  await call('search', '', { ...artistSongs, id: '123/not-an-id' }, 502);
+  await call('search', '', { ...artistSongs, id: '123/not-an-id' }, 400);
 });
 
 test('expired or modified credentials cannot be restored', t => {

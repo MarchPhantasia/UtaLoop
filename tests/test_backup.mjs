@@ -108,7 +108,7 @@ test('global video settings and unanalysed subtitles round-trip through backup',
 
 test('fresh restore retains analysis and all LLM outputs and records both missing files', async () => {
   const backup = fixture();
-  const plan = prepareImport(backup, empty(), {});
+  const plan = prepareImport(backup, empty(), {}, { restoreConnections: true });
   await writeBatch(plan.batches, { beforeCommit: () => applyLocalData(plan.changes) });
   assert.equal(plan.copies, 0);
   assert.equal((await get('tracks', 'lesson')).status, 'ready');
@@ -281,7 +281,9 @@ test('credentials can be excluded without erasing destination secrets or mutatin
   assert.ok(!JSON.stringify(backup).includes('backend-secret'));
   assert.ok(!JSON.stringify(backup).includes('asr-secret'));
   assert.equal(JSON.parse(localStorage.getItem(GLOBAL_KEYS[0])).apiKey, 'model-secret');
-  const plan = prepareImport(backup, empty(), { [GLOBAL_KEYS[0]]: JSON.stringify({ apiKey: 'keep-key', apiToken: 'keep-token', asrApiKey: 'keep-asr-key' }) });
+  const plan = prepareImport(backup, empty(),
+    { [GLOBAL_KEYS[0]]: JSON.stringify({ apiKey: 'keep-key', apiToken: 'keep-token', asrApiKey: 'keep-asr-key' }) },
+    { restoreConnections: true });
   const cfg = JSON.parse(plan.changes.get(GLOBAL_KEYS[0]));
   assert.equal(cfg.apiKey, 'keep-key');
   assert.equal(cfg.apiToken, 'keep-token');
@@ -309,7 +311,7 @@ test('a credential-free backup strips every provider key and restores only keys 
       { ...cfg.providers[1], baseUrl: 'https://different.example', apiKey: 'unrelated-key' },
     ] }),
   };
-  const plan = prepareImport(backup, empty(), local);
+  const plan = prepareImport(backup, empty(), local, { restoreConnections: true });
   const restored = JSON.parse(plan.changes.get(GLOBAL_KEYS[0]));
   assert.equal(restored.apiKey, 'keep-first');
   assert.equal(restored.providers[0].apiKey, 'keep-first');
@@ -327,7 +329,7 @@ test('credential-free imports never reuse an analysis or transcription secret fo
     apiBase: 'https://previous.example/analysis', apiToken: 'old-analysis-key',
     asrBaseUrl: 'https://same.example/v1/', asrApiKey: 'old-asr-key',
   }) };
-  const plan = prepareImport(backup, empty(), previous);
+  const plan = prepareImport(backup, empty(), previous, { restoreConnections: true });
   const cfg = JSON.parse(plan.changes.get(GLOBAL_KEYS[0]));
   assert.equal(cfg.apiToken, undefined);
   assert.equal(cfg.asrApiKey, 'old-asr-key');
@@ -338,11 +340,34 @@ test('global configuration can be kept while track configuration still follows i
   assert.deepEqual([...plan.changes.keys()], ['linguatrack.track.lesson']);
 });
 
-test('backups without saved global overrides restore built-in defaults', () => {
+test('default imports keep local service connections while restoring other preferences', () => {
+  const backup = fixture();
+  const imported = {
+    apiBase: 'https://analysis.example', apiToken: 'imported-token',
+    asrBaseUrl: 'https://speech.example/v1', asrApiKey: 'imported-speech-key',
+    providers: [{ id: 'remote', name: 'Remote', baseUrl: 'https://model.example',
+      apiKey: 'imported-model-key', model: 'chat', reasoningEffort: '' }],
+    activeProviderId: 'remote', targetLang: 'ja',
+  };
+  backup.localStorage[GLOBAL_KEYS[0]] = JSON.stringify(imported);
+  const previous = {
+    apiBase: 'https://local.example', apiToken: 'local-token', asrBaseUrl: 'https://transcribe.example',
+    asrApiKey: 'local-speech-key', baseUrl: 'https://ai.example', apiKey: 'local-model-key', model: 'local-chat',
+  };
+  const local = { [GLOBAL_KEYS[0]]: JSON.stringify(previous) };
+  const restore = (existing, options) => JSON.parse(prepareImport(backup, empty(), existing, options).changes.get(GLOBAL_KEYS[0]));
+  assert.deepEqual(restore(local), { ...previous, targetLang: 'ja' });
+  assert.deepEqual(restore({}), { targetLang: 'ja' });
+  assert.deepEqual(restore(local, { restoreConnections: true }), imported);
+});
+
+test('backups without global overrides reset preferences and retain local connections', () => {
   const backup = fixture();
   for (const key of GLOBAL_KEYS) delete backup.localStorage[key];
   const plan = prepareImport(backup, empty(), fixture().localStorage);
-  for (const key of GLOBAL_KEYS) assert.equal(plan.changes.get(key), null);
+  assert.deepEqual(JSON.parse(plan.changes.get(GLOBAL_KEYS[0])),
+    { apiKey: 'model-secret', apiToken: 'backend-secret', asrApiKey: 'asr-secret', model: 'test-model' });
+  for (const key of GLOBAL_KEYS.slice(1)) assert.equal(plan.changes.get(key), null);
 });
 
 test('invalid, future, mismatched and malicious archives fail before changing storage', () => {

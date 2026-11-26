@@ -16,6 +16,17 @@ const cacheActions = new Set(['/cache-info', '/cache-limit', '/cache-clear']);
 const mediaPath = /^\/media\/([a-f0-9]{36})$/;
 const browserKey = req => (req.headers.cookie || '').match(/(?:^|;\s*)uta_session=([\w-]+)/)?.[1];
 
+class MusicRequestError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function requirePlaylistAccount(session) {
+  if (!session.uid) throw new MusicRequestError(401, '请先确认网易云音乐登录状态');
+}
+
 function retention(mode) {
   if (!['session', '30d', 'long'].includes(mode)) throw Error('请选择有效的登录保存期限');
   return mode;
@@ -67,7 +78,15 @@ function rememberLikedPlaylist(session, playlists) {
 async function handle(api, action, input, session, desktopAudio, key) {
   async function call(method, args = {}) {
     const sent = session.cookie || '';
-    const { body, cookie } = await api[method]({ ...args, cookie: sdkCookies(sent) });
+    let response;
+    try {
+      response = await api[method]({ ...args, cookie: sdkCookies(sent) });
+    } catch (error) {
+      if (error?.status === 429) throw new MusicRequestError(429, '请求过多，请稍后重试');
+      throw error;
+    }
+    const { body, cookie } = response;
+    if (body?.code === 429) throw new MusicRequestError(429, '请求过多，请稍后重试');
     if (body.code && body.code !== 200 && method !== 'login_qr_check') throw Error('音乐服务暂时无法完成请求');
     if (sent && session.saved) {
       const updated = applyCookies(session.cookie, sent, cookie);
@@ -80,12 +99,14 @@ async function handle(api, action, input, session, desktopAudio, key) {
   const id = String(input.id || '');
   async function trackPage(ids) {
     const slice = ids.slice(offset, offset + limit);
-    const found = slice.length ? songs((await call('song_detail', { ids: slice.join(',') })).songs) : [];
+    const rows = slice.length ? (await call('song_detail', { ids: slice.join(',') })).songs : [];
+    if (!Array.isArray(rows)) throw Error('暂时无法读取歌单曲目，请重试');
+    const found = songs(rows);
     const byId = new Map(found.map(song => [String(song.id), song]));
     return { total: ids.length, items: slice.map(id => byId.get(String(id)) || { id, unavailable: true }) };
   }
   async function likedPlaylist() {
-    if (!session.uid) throw Error('请先扫码登录');
+    requirePlaylistAccount(session);
     if (session.likesPlaylist) return session.likesPlaylist;
     const { playlist } = await call('user_playlist', { uid: session.uid, limit: pageSize, offset: 0 });
     return rememberLikedPlaylist(session, playlist);
@@ -146,7 +167,7 @@ async function handle(api, action, input, session, desktopAudio, key) {
     }
     case 'search': {
       if (input.kind === 'artist-songs') {
-        if (!/^[1-9]\d{0,19}$/.test(id)) throw Error('无效的歌手编号');
+        if (!/^[1-9]\d{0,19}$/.test(id)) throw new MusicRequestError(400, '无效的歌手编号');
         const profile = input.includeArtist === true && !offset
           ? call('artist_detail', { id }).then(({ data }) => data?.artist && artistCard(data.artist)).catch(() => null)
           : null;
@@ -163,7 +184,7 @@ async function handle(api, action, input, session, desktopAudio, key) {
       return { items, more: items.length === limit && (count == null || offset + limit < count) };
     }
     case 'likes': {
-      if (!session.uid) throw Error('请先扫码登录');
+      requirePlaylistAccount(session);
       if (!offset || !session.likes) {
         const liked = await likedPlaylist();
         if (!liked) throw Error('暂时找不到「喜欢的音乐」歌单，请重试');
@@ -172,10 +193,11 @@ async function handle(api, action, input, session, desktopAudio, key) {
       return playlistPage(session.likes);
     }
     case 'folders': {
-      if (!session.uid) throw Error('请先扫码登录');
+      requirePlaylistAccount(session);
       const result = await call('user_playlist', { uid: session.uid, limit, offset });
+      if (!Array.isArray(result.playlist)) throw Error('暂时无法读取歌单列表，请重试');
       rememberLikedPlaylist(session, result.playlist);
-      return { more: !!result.more, items: (result.playlist || []).filter(p => p.creator?.userId === session.uid)
+      return { more: !!result.more, items: result.playlist.filter(p => p.creator?.userId === session.uid)
         .map(p => ({ id: p.id, name: p.name, artist: p.trackCount + ' 首', cover: coverOf(p) })) };
     }
   }
@@ -209,7 +231,7 @@ async function handle(api, action, input, session, desktopAudio, key) {
     }
     return Array.isArray(input.ids) ? covers : covers[id] || '';
   }
-  if (!/^\d+$/.test(id)) throw Error('无效的歌曲或歌单');
+  if (!/^\d+$/.test(id)) throw new MusicRequestError(400, '无效的歌曲或歌单');
   if (action === 'playlist') {
     if (!offset || session.playlist?.id !== id) session.playlist = await readPlaylist(id);
     return playlistPage(session.playlist);
@@ -221,14 +243,19 @@ async function handle(api, action, input, session, desktopAudio, key) {
   }
   if (action === 'source') {
     const hasLevel = Object.hasOwn(input, 'level');
-    if (hasLevel && !sourceLevels.has(input.level)) throw Error('请选择有效的播放音质');
+    if (hasLevel && !sourceLevels.has(input.level)) throw new MusicRequestError(400, '请选择有效的播放音质');
     // The embedded SDK skips the CLI's device-key setup. Use its web transport for these streams.
-    const atLevel = async level => (await call('song_url_v1', { id, level, crypto: 'weapi', unblock: false })).data?.[0];
+    const atLevel = async (method, args) => {
+      const { data } = await call(method, { id, ...args });
+      if (!Array.isArray(data)) throw Error('暂时无法取得音源，请重试');
+      return data[0];
+    };
+    const stream = level => atLevel('song_url_v1', { level, crypto: 'weapi', unblock: false });
     // Older pages still expect a plain URL and request the original MP3 bitrate.
-    let item = hasLevel ? await atLevel(input.level) : (await call('song_url', { id, br: 128000 })).data?.[0];
+    let item = hasLevel ? await stream(input.level) : await atLevel('song_url', { br: 128000 });
     const fallback = hasLevel && input.level !== 'standard' && !fullSource(item);
-    if (fallback) item = await atLevel('standard');
-    if (!fullSource(item)) throw Error('当前账号无法播放这首歌的完整音轨');
+    if (fallback) item = await stream('standard');
+    if (!fullSource(item)) throw new MusicRequestError(403, '当前账号无法播放这首歌的完整音轨');
     const url = new URL(item.url);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw Error('音源地址无效');
     if (!hasLevel) return url.href;
@@ -331,7 +358,8 @@ async function serve(req, res, sessions, vault, api, now, desktopAudio, bridge) 
     }
     res.end(JSON.stringify({ data }));
   } catch (err) {
-    res.writeHead(502).end(JSON.stringify({ error: /^[\u3400-\u9fff]/.test(err.message || '') ? err.message : '音乐服务请求失败，请重试' }));
+    res.writeHead(err instanceof MusicRequestError ? err.status : 502)
+      .end(JSON.stringify({ error: /^[\u3400-\u9fff]/.test(err.message || '') ? err.message : '音乐服务请求失败，请重试' }));
   }
 }
 module.exports = { createMusicServer };

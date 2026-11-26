@@ -114,7 +114,7 @@ test('managed audio obeys its limit, evicts least-recently played songs, and pre
   await h.waitFor(state => state.songs === 2);
   assert.deepEqual(h.upstreamCalls, ['1', '2', '3', '2']);
   h.revokeAccess();
-  await h.post('source', { id: 2, level: 'standard' }, 502);
+  await h.post('source', { id: 2, level: 'standard' }, 403);
 });
 
 test('reducing the limit trims existing songs and a single oversized song still streams', async t => {

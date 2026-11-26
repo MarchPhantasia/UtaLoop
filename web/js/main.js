@@ -39,6 +39,8 @@ import { nativeApp, nativeReady } from './native.js';
 import { sourceLangs } from './langs.js';
 import { createExplain, openSpeedSheet, openTrackSheet, pitchLabel } from './ui.js';
 import { createSongPitch } from './song-pitch.js';
+import { createSongStream } from './song-stream.js';
+import { desktopAudioOutput } from './desktop-audio.js';
 import { closeSheet, openMenu, openSheet, sheetOpen } from './sheet.js';
 import { analyze } from './api.js';
 import { errorMessage } from './errors.js';
@@ -104,18 +106,22 @@ let rangeDraft = null;
 let setupOnBack = null;
 let editingSubtitle = false;
 let pageActive = true;
-let collection, songQueue, songAdvance, closeModeMenu;
+let collection, songQueue, songAdvance, closeModeMenu, songStream;
 let lyricPosJob;
 window.addEventListener('pagehide', () => {
   pageActive = false;
   closeRangePicker();
   lyricPosJob?.abort();
+  songStream?.suspend();
   cancelSongAdvance();
   closeModeMenu?.();
 });
 window.addEventListener('pageshow', ({ persisted }) => {
   pageActive = true;
-  if (persisted && track) refreshLyricPos(track);
+  if (persisted) {
+    songStream?.watch();
+    if (track) refreshLyricPos(track);
+  }
 });
 
 function syncVideoLayout() {
@@ -384,20 +390,21 @@ function showSetup(onBack = null) {
 // ---------------------------------------------------------------- 载入曲目
 
 /** Resolve the next source before touching the current player. */
-async function readAudioSource(song, signal) {
+async function readAudioSource(song, signal, standard = false) {
   const blob = await audioBlob(song.id);
   signal?.throwIfAborted();
   if (blob || !song.musicId || audio.nativeAudio) return { blob };
   const { music, musicQuality, MUSIC_QUALITIES } = await import('./music-api.js');
-  const requested = musicQuality();
-  const source = await music('source', { id: song.musicId, level: requested }, signal);
+  const preferred = musicQuality();
+  const level = standard ? 'standard' : preferred;
+  const source = await music('source', { id: song.musicId, level }, signal);
   const url = typeof source === 'string' ? source : source?.url;
   if (!url) throw Error('没有取得可播放的音源');
   const quality = Object.hasOwn(MUSIC_QUALITIES, source.level) ? MUSIC_QUALITIES[source.level] : '';
   let note = '';
-  if (quality && source.level !== requested) note = '这首歌以「' + quality + '」音质播放';
+  if (quality && source.level !== preferred) note = '这首歌以「' + quality + '」音质播放';
   else if (source.fallback) note = '已切换到可用的标准音源';
-  else if (typeof source === 'string' && requested !== 'standard') note = '请更新本地音乐服务以应用音质设置';
+  else if (typeof source === 'string' && preferred !== 'standard') note = '请更新本地音乐服务以应用音质设置';
   return { url, quality, note };
 }
 
@@ -405,22 +412,21 @@ async function readAudioSource(song, signal) {
 async function attachAudio(prepared) {
   dom.btnPlay.disabled = true;
   songPitch?.setSemitones(0);
+  if (songStream && record.musicId) {
+    songStream.open(record, prepared);
+    return;
+  }
+  songStream?.close();
+  await useAudioSource(prepared || await readAudioSource(record));
+}
+
+async function useAudioSource({ blob, url, quality, note }) {
   const qualityRow = $('sourceQuality');
   qualityRow.hidden = true;
   pronunciationBlob = null;
   pronunciationLoudness?.dispose();
   pronunciationLoudness = null;
   if (track) track.pronunciationLoudness = null;
-  let source = prepared;
-  if (!source) {
-    try { source = await readAudioSource(record); }
-    catch (error) {
-      if (!record.musicId) throw error;
-      toast(error.message);
-      source = {};
-    }
-  }
-  const { blob, url, quality, note } = source;
   if (blob) {
     pronunciationLoudness = createPronunciationLoudness(blob, audio);
     if (track) track.pronunciationLoudness = pronunciationLoudness;
@@ -468,15 +474,32 @@ async function attachAudio(prepared) {
   if (videoPlayer) audio.load();
   applyPlaybackRate(settings.rate);
   if (trackCfg.id === record.id) songPitch?.setSemitones(trackCfg.pitchSemitones);
+  if (track?.id === record.id) track.audioUrl = objUrl;
   updateFileState();
 }
 
 function updateFileState() {
   dom.btnFiles.hidden = !record || (!record.audio?.missing && !record.transcript?.missing);
-  dom.btnPlay.disabled = !objUrl;
-  dom.btnPlay.title = objUrl ? '' : '请先补充音频或视频文件';
+  const blocked = songStream?.blocked();
+  dom.btnPlay.disabled = !objUrl || blocked;
+  dom.btnPlay.title = blocked ? '音源暂不可用' : objUrl ? '' : '请先补充音频或视频文件';
   paintSpeed();
   paintCheckpoint();
+}
+
+function playbackFeedback(message = '', retry, nextSong = false) {
+  const box = $('playbackFeedback');
+  const [text, button] = box.children;
+  text.textContent = message;
+  button.querySelector('span').textContent = nextSong ? '重试下一首' : '重新加载音源';
+  button.onclick = retry || null;
+  button.hidden = !retry;
+  box.toggleAttribute('data-next-song', nextSong);
+  const hidden = !message;
+  if (box.hidden !== hidden) {
+    box.hidden = hidden;
+    engine.markScrollDirty();
+  }
 }
 
 async function repairFiles() {
@@ -526,13 +549,25 @@ async function load(id, forceSetup) {
   }
   engine.audio = audio;
   bindVolume(audio);
+  const output = audio instanceof HTMLMediaElement ? await desktopAudioOutput(() => {
+    toast('OBS 兼容音频输出不可用，已切换到默认播放。');
+  }) : null;
+  if (output) {
+    if (audio !== $('audio')) {
+      output.context.createMediaElementSource(audio).connect(output.destination);
+      audio.addEventListener('play', output.resume);
+    }
+    audio.addEventListener('pause', () => { if (!audio.ended) output.flush(); });
+    audio.addEventListener('seeking', output.flush);
+    audio.addEventListener('emptied', output.flush);
+  }
   if (!isVideo) {
     dom.app.classList.add('studio');
     $('songSummary').hidden = false;
     paintSongInfo();
   }
   if (audio === $('audio')) {
-    songPitch = createSongPitch(audio);
+    songPitch = createSongPitch(audio, output);
     songPitch?.events.addEventListener('change', () => { paintSpeed(); engine.kick(); });
     if (songPitch) {
       audio.addEventListener('play', songPitch.activate);
@@ -552,11 +587,27 @@ async function load(id, forceSetup) {
     updateStudy(studySong(record), { practiced: Date.now() }).catch(() => toast('最近练唱记录保存失败'));
   });
   audio.addEventListener('timeupdate', () => engine.backgroundTick());
+  if (audio === $('audio')) {
+    songStream = createSongStream(audio, {
+      getSource: readAudioSource,
+      setSource: useAudioSource,
+      seek: at => track ? engine.seek(at) : (audio.currentTime = at),
+      play: () => player.play(),
+      feedback: (message, retry) => {
+        playbackFeedback(message, retry);
+        updateFileState();
+        reportPracticeState();
+      },
+    });
+  }
   if (practiceFrame) {
     for (const event of ['play', 'pause', 'ended', 'loadedmetadata', 'error']) audio.addEventListener(event, reportPracticeState);
   }
   player = setupPlayer({ audio, engine, dom, savePosition: setPosition, stagePosition,
-    beforePlay: songPitch?.activate,
+    canPlay: () => !songStream?.blocked(),
+    canSavePosition: () => !songStream?.blocked() && (!record?.musicId || audio.readyState >= 1),
+    onMediaError: () => songStream?.mediaError(),
+    beforePlay: songPitch?.activate ?? output?.resume,
     onEnded: isVideo ? null : onSongEnd });
   if (isVideo) {
     videoPlayer = setupVideo({ app: dom.app, video: $('video'), media: audio, engine, toggle: () => player.toggle(),
@@ -608,7 +659,7 @@ function reportPracticeState() {
   params.delete('checkpoint');
   window.parent.postMessage({ type: PRACTICE_STATE, query: params.toString(),
     title: record.title, artist: record.artist || '', cover: record.cover || '', musicId: record.musicId,
-    ready: !!objUrl && !audio.error, playing: !audio.paused && !audio.ended }, location.origin);
+    ready: !!objUrl && !audio.error && !songStream?.blocked(), playing: !audio.paused && !audio.ended }, location.origin);
 }
 
 function showSongCover(song) {
@@ -695,13 +746,14 @@ function refreshLyricPos(current) {
 }
 
 function cancelSongAdvance() {
+  if ($('playbackFeedback').hasAttribute('data-next-song')) playbackFeedback('');
   if (!songAdvance || songAdvance.committing) return;
   songAdvance.controller.abort();
   songAdvance = songQueue = null;
   dom.btnPlay.removeAttribute('aria-busy');
 }
 
-async function onSongEnd() {
+async function onSongEnd(retryIndex) {
   if (!pageActive || songAdvance || !track || !dom.setup.hidden) return;
   if (engine.repeat === 1) {
     if (engine.hasPlayableRange(engine.loopS, engine.loopEndS)) {
@@ -722,12 +774,19 @@ async function onSongEnd() {
   const advance = songAdvance = { controller: new AbortController(), committing: false };
   const { signal } = advance.controller;
   dom.btnPlay.setAttribute('aria-busy', 'true');
+  playbackFeedback('');
+  let candidate;
   try {
     const queue = songQueue || await openMusicQueue(collection, record.id, signal);
     signal.throwIfAborted();
     songQueue = queue;
     let failed = 0;
-    for (const index of queue.candidates(mode)) {
+    function* indices() {
+      if (retryIndex !== undefined) yield retryIndex;
+      for (const index of queue.candidates(mode)) if (index !== retryIndex) yield index;
+    }
+    for (const index of indices()) {
+      candidate = index;
       const item = await queue.at(index, signal);
       signal.throwIfAborted();
       if (!item || item.unavailable) continue;
@@ -748,6 +807,7 @@ async function onSongEnd() {
         nextTrack = Track.fromData(data);
       } catch (error) {
         signal.throwIfAborted();
+        if (error.temporary) throw error;
         if (++failed >= 5) throw error;
         continue;
       }
@@ -780,8 +840,9 @@ async function onSongEnd() {
     void player.play();
   } catch (error) {
     if (!signal.aborted) {
-      songQueue = null;
-      toast(errorMessage(error, '下一首加载失败，请重试'));
+      if (!error.temporary) songQueue = null;
+      playbackFeedback('下一首加载失败。' + errorMessage(error, '请重试。'),
+        () => void onSongEnd(error.temporary ? candidate : undefined), true);
     }
   } finally {
     if (songAdvance === advance) {
